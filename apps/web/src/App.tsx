@@ -12,7 +12,7 @@ type ReceiptItem = { name: string; sku: string; quantity: number; unitPrice: num
 type ReceiptData = { id: string; receiptNumber: string; createdAt: string; subtotal: number; discount: number; tax: number; total: number; status: string; note: string | null; cashierName: string; outletName: string; customerName: string | null; customerPhone: string | null; items: ReceiptItem[]; payments: Array<{ method: string; amount: number; reference: string | null }> };
 type PurchaseOrder = { id: string; orderNumber: string; status: 'draft' | 'ordered' | 'received' | 'cancelled'; total: number; createdAt: string; supplierId: string | null; supplierName: string | null; lineCount: number };
 
-const API_BASE = import.meta.env.VITE_API_URL ?? (import.meta.env.DEV ? 'http://localhost:8787' : 'https://kasuro-pos-api.fadztch12.workers.dev');
+const API_BASE = import.meta.env.VITE_API_URL ?? (import.meta.env.DEV ? 'http://localhost:8787' : 'https://kasuro-pos-api.fadztech12.workers.dev');
 const formatIdr = new Intl.NumberFormat('id-ID', { style: 'currency', currency: 'IDR', maximumFractionDigits: 0 });
 const DEMO_PRODUCTS: Product[] = [
   { id: 'p-001', businessId: 'demo', categoryId: 'grocery', sku: 'GRC-001', barcode: '899999900001', name: 'Beras Pulen 5 kg', unit: 'karung', price: 72500, cost: 64500, stock: 18, reorderPoint: 5, imageUrl: null, isFavorite: true },
