@@ -14,6 +14,11 @@ const jsonHeaders = { 'content-type': 'application/json; charset=utf-8', 'cache-
 function json(data: unknown, status = 200, headers: HeadersInit = {}) {
   return new Response(JSON.stringify(data), { status, headers: { ...jsonHeaders, ...headers } });
 }
+function withCors(response: Response, cors: HeadersInit) {
+  const headers = new Headers(response.headers);
+  new Headers(cors).forEach((value, key) => headers.set(key, value));
+  return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
+}
 
 function fail(code: string, message: string, status: number) {
   return json({ error: { code, message } }, status);
@@ -406,8 +411,8 @@ export default {
     const cors = { 'access-control-allow-origin': allowedOrigin, 'access-control-allow-credentials': 'true', 'access-control-allow-headers': 'authorization, content-type, x-client-transaction-id', 'access-control-allow-methods': 'GET, POST, OPTIONS', 'vary': 'Origin' };
     if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers: cors });
     const url = new URL(request.url);
-    if (url.pathname === '/api/v1/auth/login' && request.method === 'POST') return login(request, env);
-    if (url.pathname === '/api/v1/auth/logout' && request.method === 'POST') return logout(request, env);
+    if (url.pathname === '/api/v1/auth/login' && request.method === 'POST') return withCors(await login(request, env), cors);
+    if (url.pathname === '/api/v1/auth/logout' && request.method === 'POST') return withCors(await logout(request, env), cors);
     if (url.pathname === '/health') return json({ status: 'ok' }, 200, cors);
     const auth = await requireAuth(request, env);
     if (!isAuthContext(auth)) return new Response(auth.body, { status: auth.status, headers: { ...cors, 'content-type': 'application/json; charset=utf-8' } });
