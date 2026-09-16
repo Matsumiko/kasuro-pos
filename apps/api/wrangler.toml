@@ -1,0 +1,12 @@
+name = "kasuro-pos-api"
+main = "src/index.ts"
+compatibility_date = "2026-09-16"
+
+[vars]
+APP_ORIGIN = "http://localhost:5173"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "kasuro-db"
+database_id = "802679dd-08c4-4d61-bd8b-83f6b60f5d63"
+migrations_dir = "../../database/migrations"

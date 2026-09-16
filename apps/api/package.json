@@ -1,0 +1,19 @@
+{
+  "name": "@kasuro/api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev --local",
+    "build": "tsc --noEmit",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "lint": "tsc --noEmit",
+    "db:migrate:local": "wrangler d1 migrations apply kasuro-db --local",
+    "db:migrate:remote": "wrangler d1 migrations apply kasuro-db --remote",
+    "db:seed:local": "wrangler d1 execute kasuro-db --local --file=../../database/seed/001_demo.sql && wrangler d1 execute kasuro-db --local --file=../../database/seed/002_demo_user.sql",
+    "deploy": "wrangler deploy"
+  },
+  "dependencies": { "@kasuro/shared": "workspace:*" },
+  "devDependencies": { "@cloudflare/workers-types": "^4.20250910.0", "typescript": "^5.7.2", "vitest": "^2.1.8", "wrangler": "^4.34.0" }
+}

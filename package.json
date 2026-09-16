@@ -1,0 +1,17 @@
+{
+  "name": "kasuro-pos",
+  "private": true,
+  "version": "0.1.0",
+  "packageManager": "pnpm@9.15.0",
+  "scripts": {
+    "dev:web": "pnpm --filter @kasuro/web dev",
+    "dev:api": "pnpm --filter @kasuro/api dev",
+    "build": "pnpm -r build",
+    "typecheck": "pnpm -r typecheck",
+    "test": "pnpm -r test",
+    "lint": "pnpm -r lint"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.2"
+  }
+}

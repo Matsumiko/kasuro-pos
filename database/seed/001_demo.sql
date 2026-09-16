@@ -1,0 +1,14 @@
+PRAGMA foreign_keys = ON;
+INSERT OR IGNORE INTO businesses (id,name,currency,timezone,created_at,updated_at) VALUES ('business-demo','Toko Sumber Rejeki','IDR','Asia/Jakarta','2026-09-16T00:00:00.000Z','2026-09-16T00:00:00.000Z');
+INSERT OR IGNORE INTO outlets (id,business_id,name,address,created_at,updated_at) VALUES ('outlet-demo','business-demo','Outlet Sudirman','Jl. Jenderal Sudirman No. 18, Jakarta','2026-09-16T00:00:00.000Z','2026-09-16T00:00:00.000Z');
+INSERT OR IGNORE INTO categories (id,business_id,name,created_at,updated_at) VALUES ('cat-grocery','business-demo','grocery','2026-09-16T00:00:00.000Z','2026-09-16T00:00:00.000Z'),('cat-beverage','business-demo','beverage','2026-09-16T00:00:00.000Z','2026-09-16T00:00:00.000Z'),('cat-household','business-demo','household','2026-09-16T00:00:00.000Z','2026-09-16T00:00:00.000Z'),('cat-personal','business-demo','personal','2026-09-16T00:00:00.000Z','2026-09-16T00:00:00.000Z');
+INSERT OR IGNORE INTO products (id,business_id,category_id,sku,barcode,name,unit,price,cost,reorder_point,created_at,updated_at) VALUES
+('p-001','business-demo','cat-grocery','GRC-001','899999900001','Beras Pulen 5 kg','karung',72500,64500,5,'2026-09-16T00:00:00.000Z','2026-09-16T00:00:00.000Z'),
+('p-002','business-demo','cat-grocery','GRC-002','899999900002','Minyak Goreng 2 L','botol',36500,31200,8,'2026-09-16T00:00:00.000Z','2026-09-16T00:00:00.000Z'),
+('p-003','business-demo','cat-grocery','GRC-003','899999900003','Gula Pasir 1 kg','pack',17800,14900,10,'2026-09-16T00:00:00.000Z','2026-09-16T00:00:00.000Z'),
+('p-004','business-demo','cat-beverage','MIN-001','899999900004','Teh Melati 25 bags','box',12400,9800,8,'2026-09-16T00:00:00.000Z','2026-09-16T00:00:00.000Z'),
+('p-005','business-demo','cat-beverage','MIN-002','899999900005','Kopi Bubuk Arabika','pack',28500,21800,4,'2026-09-16T00:00:00.000Z','2026-09-16T00:00:00.000Z'),
+('p-006','business-demo','cat-household','RTG-001','899999900006','Sabun Cuci Piring 800 ml','botol',18900,15100,4,'2026-09-16T00:00:00.000Z','2026-09-16T00:00:00.000Z'),
+('p-007','business-demo','cat-household','RTG-002','899999900007','Tisu Wajah 250 sheets','box',15900,12400,6,'2026-09-16T00:00:00.000Z','2026-09-16T00:00:00.000Z'),
+('p-008','business-demo','cat-personal','PRB-001','899999900008','Sampo Daily Care 170 ml','botol',24600,19800,6,'2026-09-16T00:00:00.000Z','2026-09-16T00:00:00.000Z');
+INSERT OR IGNORE INTO inventory_levels (product_id,outlet_id,quantity,updated_at) VALUES ('p-001','outlet-demo',18,'2026-09-16T00:00:00.000Z'),('p-002','outlet-demo',24,'2026-09-16T00:00:00.000Z'),('p-003','outlet-demo',32,'2026-09-16T00:00:00.000Z'),('p-004','outlet-demo',7,'2026-09-16T00:00:00.000Z'),('p-005','outlet-demo',16,'2026-09-16T00:00:00.000Z'),('p-006','outlet-demo',12,'2026-09-16T00:00:00.000Z'),('p-007','outlet-demo',4,'2026-09-16T00:00:00.000Z'),('p-008','outlet-demo',21,'2026-09-16T00:00:00.000Z');
