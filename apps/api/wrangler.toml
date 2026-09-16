@@ -1,9 +1,8 @@
 name = "kasuro-pos-api"
 main = "src/index.ts"
 compatibility_date = "2026-09-16"
-
 [vars]
-APP_ORIGIN = "http://localhost:5173"
+APP_ORIGIN = "https://kasuro-pos-web.pages.dev"
 
 [[d1_databases]]
 binding = "DB"
