@@ -91,6 +91,7 @@ function Layout({ children }: { children: React.ReactNode }) {
     ['/app/products', 'Produk'],
     ['/app/inventory', 'Stok'],
     ['/app/purchases', 'Pembelian'],
+    ['/app/expenses', 'Biaya'],
     ['/app/customers', 'Pelanggan'],
     ['/app/refunds', 'Refund'],
   ];
@@ -2014,6 +2015,264 @@ function Refunds() {
     </Layout>
   );
 }
+function Expenses() {
+  type Expense = {
+    id: string;
+    outlet_id: string | null;
+    outlet_name: string | null;
+    amount_minor: number;
+    category: string;
+    description: string;
+    expense_date: string;
+    payment_method: string;
+    status: string;
+    created_at: string;
+  };
+  const [businesses, setBusinesses] = useState<Business[]>([]);
+  const [outlets, setOutlets] = useState<Array<{ id: string; name: string; code: string }>>([]);
+  const [expenses, setExpenses] = useState<Expense[]>([]);
+  const [outletId, setOutletId] = useState('');
+  const [amount, setAmount] = useState('');
+  const [category, setCategory] = useState('Operasional');
+  const [description, setDescription] = useState('');
+  const [expenseDate, setExpenseDate] = useState(new Date().toISOString().slice(0, 10));
+  const [paymentMethod, setPaymentMethod] = useState('cash');
+  const [from, setFrom] = useState('');
+  const [to, setTo] = useState('');
+  const [error, setError] = useState('');
+  const [success, setSuccess] = useState('');
+  const [saving, setSaving] = useState(false);
+  const businessId = businesses[0]?.id;
+  const load = async (id: string, filters = '') =>
+    setExpenses(await api<Expense[]>(`/api/v1/businesses/${id}/expenses${filters}`));
+  useEffect(() => {
+    void api<Business[]>('/api/v1/businesses')
+      .then(async (items) => {
+        setBusinesses(items);
+        if (!items[0]) return;
+        const rows = await api<typeof outlets>(`/api/v1/businesses/${items[0].id}/outlets`);
+        setOutlets(rows);
+        setOutletId(rows[0]?.id ?? '');
+        await load(items[0].id);
+      })
+      .catch((err: Error) => setError(err.message));
+  }, []);
+  const submit = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!businessId) return;
+    setSaving(true);
+    setError('');
+    setSuccess('');
+    try {
+      await api(`/api/v1/businesses/${businessId}/expenses`, {
+        method: 'POST',
+        headers: { 'X-CSRF-Token': getCsrf() },
+        body: JSON.stringify({
+          outlet_id: outletId || undefined,
+          amount_minor: amount,
+          category,
+          description,
+          expense_date: expenseDate,
+          payment_method: paymentMethod,
+        }),
+      });
+      setAmount('');
+      setDescription('');
+      await load(businessId);
+      setSuccess('Biaya tersimpan.');
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setSaving(false);
+    }
+  };
+  const filter = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!businessId) return;
+    setError('');
+    try {
+      const query = new URLSearchParams();
+      if (from) query.set('from', from);
+      if (to) query.set('to', to);
+      if (outletId) query.set('outlet_id', outletId);
+      await load(businessId, `?${query.toString()}`);
+    } catch (err) {
+      setError((err as Error).message);
+    }
+  };
+  const archive = async (expense: Expense) => {
+    if (!businessId) return;
+    setSaving(true);
+    setError('');
+    try {
+      await api(`/api/v1/businesses/${businessId}/expenses/${expense.id}`, {
+        method: 'PATCH',
+        headers: { 'X-CSRF-Token': getCsrf() },
+        body: JSON.stringify({ status: 'archived' }),
+      });
+      await load(businessId);
+      setSuccess('Biaya diarsipkan.');
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setSaving(false);
+    }
+  };
+  return (
+    <Layout>
+      <section className="page-heading">
+        <div>
+          <span className="workspace-kicker">BIAYA OPERASIONAL</span>
+          <h1>Pengeluaran, tetap terlihat.</h1>
+          <p>Catat biaya, batasi ruang lingkup outlet, dan jaga laporan tetap dapat ditelusuri.</p>
+        </div>
+        <span className="panel-label">{expenses.length} BIAYA</span>
+      </section>
+      {error && <Notice message={error} />}
+      {success && (
+        <div className="success-notice" role="status">
+          {success}
+        </div>
+      )}
+      <div className="purchasing-grid">
+        <section className="panel">
+          <div className="panel-header">
+            <h2>Catat biaya</h2>
+            <span className="panel-label">IDR</span>
+          </div>
+          <form className="compact-form" onSubmit={submit}>
+            <label>
+              Outlet
+              <select value={outletId} onChange={(e) => setOutletId(e.target.value)}>
+                <option value="">Lintas bisnis</option>
+                {outlets.map((outlet) => (
+                  <option key={outlet.id} value={outlet.id}>
+                    {outlet.name} · {outlet.code}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              Jumlah
+              <input
+                required
+                min="1"
+                inputMode="numeric"
+                value={amount}
+                onChange={(e) => setAmount(e.target.value.replace(/\D/g, ''))}
+              />
+            </label>
+            <label>
+              Kategori
+              <input
+                required
+                maxLength={80}
+                value={category}
+                onChange={(e) => setCategory(e.target.value)}
+              />
+            </label>
+            <label>
+              Deskripsi
+              <input
+                required
+                maxLength={500}
+                value={description}
+                onChange={(e) => setDescription(e.target.value)}
+              />
+            </label>
+            <div className="form-grid">
+              <label>
+                Tanggal
+                <input
+                  required
+                  type="date"
+                  value={expenseDate}
+                  onChange={(e) => setExpenseDate(e.target.value)}
+                />
+              </label>
+              <label>
+                Metode
+                <select value={paymentMethod} onChange={(e) => setPaymentMethod(e.target.value)}>
+                  <option value="cash">Tunai</option>
+                  <option value="bank_transfer">Transfer bank</option>
+                  <option value="card">Kartu</option>
+                  <option value="other">Lainnya</option>
+                </select>
+              </label>
+            </div>
+            <button className="button" disabled={saving} type="submit">
+              Simpan biaya
+            </button>
+          </form>
+        </section>
+        <section className="panel">
+          <div className="panel-header">
+            <h2>Filter riwayat</h2>
+            <span className="panel-label">MAKS 100</span>
+          </div>
+          <form className="compact-form" onSubmit={filter}>
+            <div className="form-grid">
+              <label>
+                Dari
+                <input type="date" value={from} onChange={(e) => setFrom(e.target.value)} />
+              </label>
+              <label>
+                Sampai
+                <input type="date" value={to} onChange={(e) => setTo(e.target.value)} />
+              </label>
+            </div>
+            <button className="button secondary" type="submit">
+              Terapkan filter
+            </button>
+          </form>
+          <div className="metric">
+            <span>Total tampilan</span>
+            <strong>
+              {money(expenses.reduce((sum, expense) => sum + expense.amount_minor, 0))}
+            </strong>
+          </div>
+        </section>
+      </div>
+      <section className="panel purchase-history">
+        <div className="panel-header">
+          <h2>Riwayat biaya</h2>
+          <span className="panel-label">AKTIF</span>
+        </div>
+        {expenses.length ? (
+          <div className="data-list">
+            {expenses.map((expense) => (
+              <div className="data-row" key={expense.id}>
+                <span>
+                  <strong>
+                    {expense.category} · {money(expense.amount_minor)}
+                  </strong>
+                  <small>
+                    {expense.expense_date} · {expense.outlet_name ?? 'Lintas bisnis'} ·{' '}
+                    {expense.payment_method} · {expense.description}
+                  </small>
+                </span>
+                <button
+                  className="text-button"
+                  disabled={saving}
+                  type="button"
+                  onClick={() => void archive(expense)}
+                >
+                  Arsipkan
+                </button>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div className="empty-panel">
+            <span className="empty-number">—</span>
+            <h2>Belum ada biaya.</h2>
+            <p>Catat biaya operasional pertama untuk mulai membangun laporan.</p>
+          </div>
+        )}
+      </section>
+    </Layout>
+  );
+}
 function Reports() {
   const [businesses, setBusinesses] = useState<Business[]>([]);
   const [summary, setSummary] = useState<Record<string, number> | null>(null);
@@ -2538,6 +2797,14 @@ createRoot(document.getElementById('root')!).render(
           element={
             <RequireAuth>
               <SaleDetail />
+            </RequireAuth>
+          }
+        />
+        <Route
+          path="/app/expenses"
+          element={
+            <RequireAuth>
+              <Expenses />
             </RequireAuth>
           }
         />
