@@ -1,0 +1,14 @@
+name = "kasuro-api"
+main = "src/index.ts"
+compatibility_date = "2026-09-17"
+
+[vars]
+ENVIRONMENT = "local"
+API_VERSION = "0.1.0"
+WEB_ORIGIN = "http://localhost:5173"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "kasuro-local"
+database_id = "local"
+migrations_dir = "../../database/migrations"

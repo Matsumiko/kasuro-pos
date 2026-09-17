@@ -1,0 +1,28 @@
+name = "kasuro-api"
+main = "apps/api/src/index.ts"
+compatibility_date = "2026-09-17"
+
+[vars]
+ENVIRONMENT = "local"
+API_VERSION = "0.1.0"
+WEB_ORIGIN = "http://localhost:5173"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "kasuro-local"
+database_id = "local"
+migrations_dir = "database/migrations"
+
+[env.production]
+name = "kasuro-api"
+
+[env.production.vars]
+ENVIRONMENT = "production"
+API_VERSION = "0.1.0"
+WEB_ORIGIN = "https://kasuro-pos-web.pages.dev"
+
+[[env.production.d1_databases]]
+binding = "DB"
+database_name = "kasuro-pos-prod"
+database_id = "b1139d45-c4c0-4a41-b721-a9afef3ab023"
+migrations_dir = "database/migrations"

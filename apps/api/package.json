@@ -1,0 +1,15 @@
+{
+  "name": "@kasuro/api",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev src/index.ts --local"
+  },
+  "dependencies": {
+    "hono": "^4.7.8",
+    "@kasuro/contracts": "0.1.0",
+    "@kasuro/domain": "0.1.0",
+    "@kasuro/db": "0.1.0"
+  }
+}

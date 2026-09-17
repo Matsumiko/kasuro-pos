@@ -1,0 +1,23 @@
+/* Hallmark · component tokens for Kasuro POS */
+:root {
+  --color-paper: oklch(96% 0.012 85);
+  --color-surface: oklch(99% 0.006 85);
+  --color-ink: oklch(23% 0.025 255);
+  --color-muted: oklch(54% 0.025 255);
+  --color-rule: oklch(86% 0.02 85);
+  --color-accent: oklch(52% 0.15 35);
+  --color-focus: oklch(48% 0.15 245);
+  --font-display: 'Manrope', sans-serif;
+  --font-body: 'Manrope', sans-serif;
+  --font-mono: 'DM Mono', monospace;
+  --space-xs: 0.25rem;
+  --space-sm: 0.5rem;
+  --space-md: 1rem;
+  --space-lg: 1.5rem;
+  --space-xl: 2.5rem;
+  --space-2xl: 4rem;
+  --radius-sm: 0.45rem;
+  --radius-md: 0.8rem;
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --dur-fast: 140ms;
+}

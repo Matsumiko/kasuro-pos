@@ -1,0 +1,40 @@
+{
+  "name": "kasuro-pos",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "packageManager": "npm@10.9.8",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev:web": "vite --host 0.0.0.0",
+    "build": "npm run build -w @kasuro/web",
+    "typecheck": "tsc -b",
+    "dev:api": "wrangler dev --config wrangler.toml --local --port=8787",
+    "lint": "eslint .",
+    "format:check": "prettier --check .",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:e2e": "playwright test",
+    "db:migrate:local": "wrangler d1 migrations apply kasuro-local --local --persist-to .wrangler/state/shared",
+    "db:seed:local": "wrangler d1 execute kasuro-local --local --persist-to .wrangler/state/shared --file=database/seed/seed.sql"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20260917.1",
+    "@playwright/test": "^1.55.0",
+    "@types/node": "^22.15.0",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^4.4.1",
+    "eslint": "^9.26.0",
+    "eslint-plugin-react-hooks": "^5.2.0",
+    "prettier": "^3.5.3",
+    "typescript": "^5.8.3",
+    "typescript-eslint": "^8.31.0",
+    "vite": "^6.3.0",
+    "vitest": "^3.1.2",
+    "wrangler": "^4.12.0"
+  }
+}
