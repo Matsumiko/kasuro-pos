@@ -132,11 +132,43 @@ export function registerSyncRoutes(app: Hono<Env>): void {
     const membership = requirePermission(c, 'sales.view');
     if (!c.env.DB) return unavailable(c);
     const result = await c.env.DB.prepare(
-      `SELECT id,outlet_id,client_transaction_id,total_minor,created_at FROM sales WHERE business_id=? AND status='sync_conflict' ORDER BY created_at DESC LIMIT 50`,
+      `SELECT id,outlet_id,client_transaction_id,total_minor,created_at FROM sales WHERE business_id=? AND status='sync_conflict' AND (?=1 OR EXISTS (SELECT 1 FROM member_outlets mo WHERE mo.member_id=? AND mo.outlet_id=sales.outlet_id)) ORDER BY created_at DESC LIMIT 50`,
     )
-      .bind(membership.businessId)
+      .bind(membership.businessId, membership.allOutlets ? 1 : 0, membership.memberId)
       .all();
     return c.json({ data: result.results });
+  });
+
+  app.post('/api/v1/businesses/:businessId/sync/conflicts/:saleId/resolve', async (c) => {
+    const membership = requirePermission(c, 'sales.create');
+    if (!c.env.DB) return unavailable(c);
+    const body = await c.req.json<{ action?: 'accept' | 'void' }>();
+    if (body.action !== 'accept' && body.action !== 'void')
+      return c.json(
+        { error: { code: 'VALIDATION_ERROR', message: 'Resolution action is required' } },
+        422,
+      );
+    const sale = await c.env.DB.prepare(
+      `SELECT id,outlet_id,status FROM sales WHERE business_id=? AND id=? AND status='sync_conflict'`,
+    )
+      .bind(membership.businessId, c.req.param('saleId'))
+      .first<{ id: string; outlet_id: string }>();
+    if (!sale) return c.json({ error: { code: 'NOT_FOUND', message: 'Not found' } }, 404);
+    if (!membership.allOutlets) {
+      const access = await c.env.DB.prepare(
+        'SELECT 1 FROM member_outlets WHERE member_id=? AND outlet_id=?',
+      )
+        .bind(membership.memberId, sale.outlet_id)
+        .first();
+      if (!access) return c.json({ error: { code: 'NOT_FOUND', message: 'Not found' } }, 404);
+    }
+    const nextStatus = body.action === 'void' ? 'void' : 'completed';
+    await c.env.DB.prepare(
+      "UPDATE sales SET status=?,updated_at=? WHERE business_id=? AND id=? AND status='sync_conflict'",
+    )
+      .bind(nextStatus, new Date().toISOString(), membership.businessId, sale.id)
+      .run();
+    return c.json({ data: { id: sale.id, status: nextStatus } });
   });
 }
 

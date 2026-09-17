@@ -1,14 +1,15 @@
+import {
+  cacheCatalog,
+  listOfflineConflicts,
+  listPendingOfflineSales,
+  readCachedCatalog,
+  syncOfflineSales,
+  queueOfflineSale,
+  type OfflineSalePayload,
+} from './lib/offline';
 import { StrictMode, useEffect, useMemo, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import {
-  BrowserRouter,
-  Link,
-  Route,
-  Routes,
-  useLocation,
-  useNavigate,
-  useParams,
-} from 'react-router-dom';
+import { BrowserRouter, Link, Route, Routes, useNavigate, useParams } from 'react-router-dom';
 import './styles/global.css';
 if ('serviceWorker' in navigator) void navigator.serviceWorker.register('/sw.js');
 
@@ -73,16 +74,28 @@ async function api<T>(path: string, options: RequestInit = {}): Promise<T> {
 }
 
 function Layout({ children }: { children: React.ReactNode }) {
-  const location = useLocation();
   const [online, setOnline] = useState(navigator.onLine);
+  const [pendingCount, setPendingCount] = useState(0);
+  const [conflictCount, setConflictCount] = useState(0);
+  const refreshOffline = async () => {
+    setPendingCount((await listPendingOfflineSales()).length);
+    setConflictCount((await listOfflineConflicts()).length);
+  };
   useEffect(() => {
-    const on = () => setOnline(true);
+    const on = () => {
+      setOnline(true);
+      void syncOfflineSales(API).then(refreshOffline).catch(refreshOffline);
+    };
     const off = () => setOnline(false);
+    const changed = () => void refreshOffline();
     addEventListener('online', on);
     addEventListener('offline', off);
+    addEventListener('kasuro-offline-queue-changed', changed);
+    void refreshOffline();
     return () => {
       removeEventListener('online', on);
       removeEventListener('offline', off);
+      removeEventListener('kasuro-offline-queue-changed', changed);
     };
   }, []);
   const links: Array<[string, string]> = [
@@ -137,6 +150,8 @@ function Layout({ children }: { children: React.ReactNode }) {
             <span className={online ? 'connection' : 'connection offline'}>
               {online ? 'Terhubung' : 'Mode offline'}
             </span>
+            {pendingCount > 0 && <span className="panel-label">{pendingCount} MENUNGGU SYNC</span>}
+            {conflictCount > 0 && <span className="panel-label">{conflictCount} KONFLIK</span>}
             <Link to="/app/pos" className="button small">
               Buka kasir
             </Link>
@@ -408,12 +423,31 @@ function Pos() {
   }, []);
   useEffect(() => {
     if (!businessId) return;
-    void api<Product[]>(`/api/v1/businesses/${businessId}/products?q=${encodeURIComponent(query)}`)
-      .then(setProducts)
-      .catch((err: Error) => setMessage(err.message));
-    void api<typeof heldSales>(`/api/v1/businesses/${businessId}/sales/held`)
-      .then(setHeldSales)
-      .catch(() => setHeldSales([]));
+    const loadProducts = async () => {
+      try {
+        if (!navigator.onLine) {
+          setProducts(await readCachedCatalog<Product>(businessId));
+          return;
+        }
+        const rows = await api<Product[]>(
+          `/api/v1/businesses/${businessId}/products?q=${encodeURIComponent(query)}`,
+        );
+        setProducts(rows);
+        await cacheCatalog(
+          businessId,
+          rows.map((row) => ({ ...row, variant_id: row.variant_id })),
+        );
+      } catch (err) {
+        const cached = await readCachedCatalog<Product>(businessId);
+        if (cached.length) setProducts(cached);
+        else setMessage((err as Error).message);
+      }
+    };
+    void loadProducts();
+    if (navigator.onLine)
+      void api<typeof heldSales>(`/api/v1/businesses/${businessId}/sales/held`)
+        .then(setHeldSales)
+        .catch(() => setHeldSales([]));
   }, [businessId, query]);
   useEffect(() => {
     if (!businessId || !outletId) return;
@@ -453,6 +487,15 @@ function Pos() {
   };
   const complete = async (saleId: string | null, amount: number) => {
     if (!businessId || !outletId || !register || !shift) return;
+    const payload: OfflineSalePayload = {
+      business_id: businessId,
+      outlet_id: outletId,
+      register_id: register.id,
+      shift_id: shift.id,
+      client_transaction_id: crypto.randomUUID(),
+      lines: Object.entries(grouped).map(([variant_id, quantity]) => ({ variant_id, quantity })),
+      payment: { method: 'cash', amount_minor: amount },
+    };
     setBusy(true);
     try {
       const sale = saleId
@@ -467,17 +510,7 @@ function Pos() {
         : await api<typeof completedSale>(`/api/v1/businesses/${businessId}/sales`, {
             method: 'POST',
             headers: { 'X-CSRF-Token': getCsrf(), 'Idempotency-Key': crypto.randomUUID() },
-            body: JSON.stringify({
-              outlet_id: outletId,
-              register_id: register.id,
-              shift_id: shift.id,
-              client_transaction_id: crypto.randomUUID(),
-              lines: Object.entries(grouped).map(([variant_id, quantity]) => ({
-                variant_id,
-                quantity,
-              })),
-              payments: [{ method: 'cash', amount_minor: amount }],
-            }),
+            body: JSON.stringify(payload),
           });
       setCompletedSale(sale);
       setCart([]);
@@ -486,12 +519,25 @@ function Pos() {
       setReceivedCash('');
       setHeldSales((current) => current.filter((held) => held.id !== saleId));
     } catch (err) {
-      setMessage((err as Error).message);
+      if (!saleId && !navigator.onLine) {
+        await queueOfflineSale(payload, 'Menunggu koneksi untuk sinkronisasi');
+        window.dispatchEvent(new Event('kasuro-offline-queue-changed'));
+        setCart([]);
+        setPaymentOpen(false);
+        setReceivedCash('');
+        setMessage(
+          'Transaksi tunai disimpan sebagai provisional dan akan disinkronkan saat online.',
+        );
+      } else setMessage((err as Error).message);
     } finally {
       setBusy(false);
     }
   };
   const hold = async () => {
+    if (!navigator.onLine) {
+      setMessage('Simpan pesanan membutuhkan koneksi. Offline hanya mendukung penjualan tunai.');
+      return;
+    }
     if (!businessId || !outletId || !register || !shift || !cart.length) return;
     setBusy(true);
     try {
