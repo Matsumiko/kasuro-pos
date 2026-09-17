@@ -541,6 +541,98 @@ h1 {
   letter-spacing: -0.04em;
   margin: 0;
 }
+.purchasing-grid {
+  display: grid;
+  gap: var(--space-md);
+  grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.2fr);
+  margin: 0 auto var(--space-md);
+  max-width: 1240px;
+  padding: 0 clamp(var(--space-md), 4vw, var(--space-2xl));
+}
+.compact-form {
+  display: grid;
+  gap: var(--space-md);
+}
+.compact-form label {
+  display: grid;
+  gap: var(--space-xs);
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+.compact-form input,
+.compact-form select,
+.receive-row input {
+  background: var(--color-paper);
+  border: 1px solid var(--color-rule);
+  border-radius: var(--radius-sm);
+  color: var(--color-ink);
+  min-width: 0;
+  padding: 0.72rem;
+}
+.mini-list {
+  border-top: 1px solid var(--color-rule);
+  display: grid;
+  gap: 1px;
+  margin-top: var(--space-lg);
+}
+.mini-row,
+.receive-row {
+  align-items: center;
+  border-bottom: 1px solid var(--color-rule);
+  display: flex;
+  gap: var(--space-md);
+  justify-content: space-between;
+  padding: var(--space-sm) 0;
+}
+.mini-row span,
+.receive-row span {
+  display: grid;
+  gap: 0.2rem;
+  min-width: 0;
+}
+.mini-row small,
+.receive-row small,
+.muted-copy {
+  color: var(--color-muted);
+  font-size: 0.75rem;
+}
+.purchase-line {
+  display: grid;
+  gap: var(--space-sm);
+  grid-template-columns: minmax(0, 1.5fr) minmax(4rem, 0.4fr) minmax(6rem, 0.7fr) auto;
+}
+.purchase-line select,
+.purchase-line input {
+  background: var(--color-paper);
+  border: 1px solid var(--color-rule);
+  border-radius: var(--radius-sm);
+  color: var(--color-ink);
+  min-width: 0;
+  padding: 0.72rem;
+}
+.purchase-history {
+  margin: 0 auto var(--space-2xl);
+  max-width: 1240px;
+}
+.purchase-history .data-list {
+  padding: 0;
+}
+.purchase-row {
+  cursor: pointer;
+  text-align: left;
+  width: 100%;
+}
+.purchase-modal {
+  max-width: 720px;
+}
+.receive-list {
+  display: grid;
+  margin: var(--space-lg) 0;
+}
+.receive-row input {
+  max-width: 6rem;
+  text-align: right;
+}
 .dark-panel {
   background: var(--color-ink);
   color: var(--color-paper);

@@ -90,6 +90,7 @@ function Layout({ children }: { children: React.ReactNode }) {
     ['/app/pos', 'Kasir'],
     ['/app/products', 'Produk'],
     ['/app/inventory', 'Stok'],
+    ['/app/purchases', 'Pembelian'],
     ['/app/reports', 'Laporan'],
     ['/app/sales', 'Penjualan'],
     ['/app/refunds', 'Refund'],
@@ -1213,6 +1214,444 @@ function InventoryAdjustment() {
     </Layout>
   );
 }
+function Purchasing() {
+  type Supplier = { id: string; supplier_code: string; name: string; phone: string | null };
+  type Purchase = {
+    id: string;
+    supplier_name: string | null;
+    outlet_name: string | null;
+    outlet_id: string;
+    status: string;
+    total_minor: number;
+    created_at: string;
+  };
+  type PurchaseDetail = Purchase & {
+    lines: Array<{
+      id: string;
+      variant_id: string;
+      product_name: string;
+      label: string;
+      sku: string;
+      quantity_ordered: number;
+      quantity_received: number;
+      unit_cost_minor: number;
+    }>;
+  };
+  type OrderLine = { variant_id: string; quantity: string; unit_cost_minor: string };
+  const [businesses, setBusinesses] = useState<Business[]>([]);
+  const [suppliers, setSuppliers] = useState<Supplier[]>([]);
+  const [outlets, setOutlets] = useState<Array<{ id: string; name: string; code: string }>>([]);
+  const [products, setProducts] = useState<Product[]>([]);
+  const [purchases, setPurchases] = useState<Purchase[]>([]);
+  const [detail, setDetail] = useState<PurchaseDetail | null>(null);
+  const [supplierName, setSupplierName] = useState('');
+  const [supplierCode, setSupplierCode] = useState('');
+  const [supplierPhone, setSupplierPhone] = useState('');
+  const [outletId, setOutletId] = useState('');
+  const [supplierId, setSupplierId] = useState('');
+  const [lines, setLines] = useState<OrderLine[]>([
+    { variant_id: '', quantity: '1', unit_cost_minor: '' },
+  ]);
+  const [receiveQuantities, setReceiveQuantities] = useState<Record<string, string>>({});
+  const [error, setError] = useState('');
+  const [success, setSuccess] = useState('');
+  const [saving, setSaving] = useState(false);
+  const businessId = businesses[0]?.id;
+  const refresh = async (id: string) => {
+    const [supplierRows, outletRows, productRows, purchaseRows] = await Promise.all([
+      api<Supplier[]>(`/api/v1/businesses/${id}/suppliers`),
+      api<typeof outlets>(`/api/v1/businesses/${id}/outlets`),
+      api<Product[]>(`/api/v1/businesses/${id}/products`),
+      api<Purchase[]>(`/api/v1/businesses/${id}/purchases`),
+    ]);
+    setSuppliers(supplierRows);
+    setOutlets(outletRows);
+    setProducts(productRows);
+    setPurchases(purchaseRows);
+    setSupplierId((current) => current || supplierRows[0]?.id || '');
+    setOutletId((current) => current || outletRows[0]?.id || '');
+    setLines((current) =>
+      current.map((line, index) => ({
+        ...line,
+        variant_id: line.variant_id || (index === 0 ? productRows[0]?.variant_id || '' : ''),
+      })),
+    );
+  };
+  useEffect(() => {
+    void api<Business[]>('/api/v1/businesses')
+      .then((items) => {
+        setBusinesses(items);
+        if (items[0]) return refresh(items[0].id);
+      })
+      .catch((err: Error) => setError(err.message));
+  }, []);
+  const createSupplier = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!businessId) return;
+    setSaving(true);
+    setError('');
+    setSuccess('');
+    try {
+      await api(`/api/v1/businesses/${businessId}/suppliers`, {
+        method: 'POST',
+        headers: { 'X-CSRF-Token': getCsrf() },
+        body: JSON.stringify({
+          supplier_code: supplierCode,
+          name: supplierName,
+          phone: supplierPhone,
+        }),
+      });
+      setSupplierName('');
+      setSupplierCode('');
+      setSupplierPhone('');
+      await refresh(businessId);
+      setSuccess('Supplier tersimpan.');
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setSaving(false);
+    }
+  };
+  const createPurchase = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!businessId) return;
+    setSaving(true);
+    setError('');
+    setSuccess('');
+    try {
+      const created = await api<{ id: string }>(`/api/v1/businesses/${businessId}/purchases`, {
+        method: 'POST',
+        headers: { 'X-CSRF-Token': getCsrf() },
+        body: JSON.stringify({
+          supplier_id: supplierId || undefined,
+          outlet_id: outletId,
+          lines: lines.map((line) => ({
+            variant_id: line.variant_id,
+            quantity: line.quantity,
+            unit_cost_minor: line.unit_cost_minor,
+          })),
+        }),
+      });
+      await refresh(businessId);
+      await openPurchase(created.id);
+      setSuccess('Purchase order dibuat. Siap diterima bertahap.');
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setSaving(false);
+    }
+  };
+  const openPurchase = async (id: string) => {
+    if (!businessId) return;
+    try {
+      const row = await api<PurchaseDetail>(`/api/v1/businesses/${businessId}/purchases/${id}`);
+      setDetail(row);
+      setReceiveQuantities(
+        Object.fromEntries(
+          row.lines.map((line) => [
+            line.id,
+            String(line.quantity_ordered - line.quantity_received),
+          ]),
+        ),
+      );
+    } catch (err) {
+      setError((err as Error).message);
+    }
+  };
+  const receive = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!businessId || !detail) return;
+    setSaving(true);
+    setError('');
+    setSuccess('');
+    try {
+      const receivingLines = detail.lines
+        .map((line) => ({ line_id: line.id, quantity: receiveQuantities[line.id] || '0' }))
+        .filter((line) => Number(line.quantity) > 0);
+      if (!receivingLines.length) throw new Error('Masukkan jumlah penerimaan terlebih dahulu.');
+      await api(`/api/v1/businesses/${businessId}/purchases/${detail.id}/receive`, {
+        method: 'POST',
+        headers: { 'X-CSRF-Token': getCsrf() },
+        body: JSON.stringify({ lines: receivingLines }),
+      });
+      await refresh(businessId);
+      await openPurchase(detail.id);
+      setSuccess('Penerimaan tersimpan. Stok dan modal rata-rata sudah diperbarui.');
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setSaving(false);
+    }
+  };
+  return (
+    <Layout>
+      <section className="page-heading">
+        <div>
+          <span className="workspace-kicker">PEMBELIAN</span>
+          <h1>Barang masuk, tercatat.</h1>
+          <p>Kelola supplier, pesanan, penerimaan parsial, dan modal stok dari satu alur.</p>
+        </div>
+        <span className="panel-label">{purchases.length} ORDER</span>
+      </section>
+      {error && <Notice message={error} />}
+      {success && (
+        <div className="success-notice" role="status">
+          {success}
+        </div>
+      )}
+      <div className="purchasing-grid">
+        <section className="panel">
+          <div className="panel-header">
+            <h2>Supplier</h2>
+            <span className="panel-label">{suppliers.length} AKTIF</span>
+          </div>
+          <form className="compact-form" onSubmit={createSupplier}>
+            <label>
+              Kode
+              <input
+                required
+                maxLength={40}
+                value={supplierCode}
+                onChange={(e) => setSupplierCode(e.target.value.toUpperCase())}
+              />
+            </label>
+            <label>
+              Nama
+              <input
+                required
+                maxLength={120}
+                value={supplierName}
+                onChange={(e) => setSupplierName(e.target.value)}
+              />
+            </label>
+            <label>
+              Telepon
+              <input value={supplierPhone} onChange={(e) => setSupplierPhone(e.target.value)} />
+            </label>
+            <button className="button" disabled={saving} type="submit">
+              Tambah supplier
+            </button>
+          </form>
+          <div className="mini-list">
+            {suppliers.map((supplier) => (
+              <div className="mini-row" key={supplier.id}>
+                <span>
+                  <strong>{supplier.name}</strong>
+                  <small>
+                    {supplier.supplier_code}
+                    {supplier.phone ? ` · ${supplier.phone}` : ''}
+                  </small>
+                </span>
+              </div>
+            ))}
+            {!suppliers.length && <small className="muted-copy">Belum ada supplier.</small>}
+          </div>
+        </section>
+        <section className="panel">
+          <div className="panel-header">
+            <h2>Purchase order baru</h2>
+            <span className="panel-label">IDR</span>
+          </div>
+          <form className="compact-form" onSubmit={createPurchase}>
+            <div className="form-grid">
+              <label>
+                Supplier
+                <select value={supplierId} onChange={(e) => setSupplierId(e.target.value)}>
+                  <option value="">Tanpa supplier</option>
+                  {suppliers.map((supplier) => (
+                    <option key={supplier.id} value={supplier.id}>
+                      {supplier.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                Outlet
+                <select required value={outletId} onChange={(e) => setOutletId(e.target.value)}>
+                  <option value="">Pilih outlet</option>
+                  {outlets.map((outlet) => (
+                    <option key={outlet.id} value={outlet.id}>
+                      {outlet.name} · {outlet.code}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
+            {lines.map((line, index) => (
+              <div className="purchase-line" key={index}>
+                <select
+                  required
+                  value={line.variant_id}
+                  onChange={(e) =>
+                    setLines((current) =>
+                      current.map((item, i) =>
+                        i === index ? { ...item, variant_id: e.target.value } : item,
+                      ),
+                    )
+                  }
+                >
+                  <option value="">Produk</option>
+                  {products.map((product) => (
+                    <option key={product.variant_id} value={product.variant_id}>
+                      {product.name} · {product.variant_label}
+                    </option>
+                  ))}
+                </select>
+                <input
+                  required
+                  min="1"
+                  inputMode="numeric"
+                  placeholder="Qty"
+                  value={line.quantity}
+                  onChange={(e) =>
+                    setLines((current) =>
+                      current.map((item, i) =>
+                        i === index
+                          ? { ...item, quantity: e.target.value.replace(/\D/g, '') }
+                          : item,
+                      ),
+                    )
+                  }
+                />
+                <input
+                  required
+                  min="0"
+                  inputMode="numeric"
+                  placeholder="Modal/unit"
+                  value={line.unit_cost_minor}
+                  onChange={(e) =>
+                    setLines((current) =>
+                      current.map((item, i) =>
+                        i === index
+                          ? { ...item, unit_cost_minor: e.target.value.replace(/\D/g, '') }
+                          : item,
+                      ),
+                    )
+                  }
+                />
+                {lines.length > 1 && (
+                  <button
+                    className="text-button"
+                    type="button"
+                    aria-label="Hapus baris"
+                    onClick={() => setLines((current) => current.filter((_, i) => i !== index))}
+                  >
+                    ×
+                  </button>
+                )}
+              </div>
+            ))}
+            <div className="form-actions">
+              <button
+                className="button secondary"
+                type="button"
+                onClick={() =>
+                  setLines((current) => [
+                    ...current,
+                    { variant_id: '', quantity: '1', unit_cost_minor: '' },
+                  ])
+                }
+              >
+                Tambah baris
+              </button>
+              <button
+                className="button"
+                disabled={saving || !products.length || !outlets.length}
+                type="submit"
+              >
+                {saving ? 'Menyimpan…' : 'Buat purchase order'}
+              </button>
+            </div>
+          </form>
+        </section>
+      </div>
+      <section className="panel purchase-history">
+        <div className="panel-header">
+          <h2>Riwayat pembelian</h2>
+          <span className="panel-label">TERBARU</span>
+        </div>
+        {purchases.length ? (
+          <div className="data-list">
+            {purchases.map((purchase) => (
+              <button
+                className="data-row purchase-row"
+                key={purchase.id}
+                type="button"
+                onClick={() => void openPurchase(purchase.id)}
+              >
+                <span>
+                  <strong>{purchase.supplier_name ?? 'Tanpa supplier'}</strong>
+                  <small>
+                    {purchase.outlet_name ?? purchase.outlet_id.slice(0, 8)} ·{' '}
+                    {new Date(purchase.created_at).toLocaleString('id-ID')} · {purchase.status}
+                  </small>
+                </span>
+                <b>{money(purchase.total_minor)}</b>
+              </button>
+            ))}
+          </div>
+        ) : (
+          <p className="muted-copy">Belum ada purchase order.</p>
+        )}
+      </section>
+      {detail && (
+        <div className="modal-backdrop">
+          <form className="payment-modal purchase-modal" onSubmit={receive}>
+            <div className="panel-header">
+              <div>
+                <span className="workspace-kicker">DETAIL PEMBELIAN</span>
+                <h2>{detail.supplier_name ?? 'Tanpa supplier'}</h2>
+              </div>
+              <button className="text-button" type="button" onClick={() => setDetail(null)}>
+                Tutup
+              </button>
+            </div>
+            <p className="muted-copy">
+              {detail.outlet_name} · {detail.status} · Total {money(detail.total_minor)}
+            </p>
+            <div className="receive-list">
+              {detail.lines.map((line) => {
+                const remaining = line.quantity_ordered - line.quantity_received;
+                return (
+                  <label className="receive-row" key={line.id}>
+                    <span>
+                      <strong>
+                        {line.product_name} · {line.label}
+                      </strong>
+                      <small>
+                        {line.sku} · {line.quantity_received}/{line.quantity_ordered} diterima ·
+                        modal {money(line.unit_cost_minor)}
+                      </small>
+                    </span>
+                    <input
+                      aria-label={`Penerimaan ${line.product_name}`}
+                      disabled={!remaining}
+                      max={remaining}
+                      min="0"
+                      inputMode="numeric"
+                      value={receiveQuantities[line.id] ?? '0'}
+                      onChange={(e) =>
+                        setReceiveQuantities((current) => ({
+                          ...current,
+                          [line.id]: e.target.value.replace(/\D/g, ''),
+                        }))
+                      }
+                    />
+                  </label>
+                );
+              })}
+            </div>
+            {detail.status !== 'received' && (
+              <button className="button" disabled={saving} type="submit">
+                {saving ? 'Memproses…' : 'Catat penerimaan'}
+              </button>
+            )}
+          </form>
+        </div>
+      )}
+    </Layout>
+  );
+}
 function Refunds() {
   const [businesses, setBusinesses] = useState<Business[]>([]);
   const [refunds, setRefunds] = useState<
@@ -1813,6 +2252,14 @@ createRoot(document.getElementById('root')!).render(
           element={
             <RequireAuth>
               <Refunds />
+            </RequireAuth>
+          }
+        />
+        <Route
+          path="/app/purchases"
+          element={
+            <RequireAuth>
+              <Purchasing />
             </RequireAuth>
           }
         />
