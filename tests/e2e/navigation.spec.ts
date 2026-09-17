@@ -19,6 +19,7 @@ test.describe('public and authenticated navigation', () => {
       '/app/inventory/adjustments',
       '/app/sales',
       '/app/sales/example',
+      '/app/refunds',
     ]) {
       await page.goto(path);
       await expect(page).toHaveURL(/\/login$/);

@@ -900,6 +900,47 @@ h1 {
 .payment-change strong {
   font-size: 1.4rem;
 }
+.refund-button {
+  margin-top: var(--space-lg);
+  width: 100%;
+}
+.refund-feedback {
+  margin: 0 auto var(--space-lg);
+  max-width: 720px;
+}
+.refund-modal {
+  max-height: min(90vh, 760px);
+  overflow: auto;
+}
+.refund-lines {
+  display: grid;
+  gap: var(--space-md);
+}
+.refund-lines label,
+.refund-modal > label {
+  display: grid;
+  gap: var(--space-sm);
+}
+.refund-available {
+  color: var(--color-muted);
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  font-weight: 400;
+}
+.refund-modal select,
+.refund-modal textarea {
+  background: var(--color-paper);
+  border: 1px solid var(--color-rule);
+  border-radius: var(--radius-sm);
+  color: var(--color-ink);
+  font: inherit;
+  padding: 0.8rem;
+  width: 100%;
+}
+.refund-modal textarea {
+  min-height: 5rem;
+  resize: vertical;
+}
 .sale-row {
   color: var(--color-ink);
   text-decoration: none;

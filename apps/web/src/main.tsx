@@ -92,6 +92,7 @@ function Layout({ children }: { children: React.ReactNode }) {
     ['/app/inventory', 'Stok'],
     ['/app/reports', 'Laporan'],
     ['/app/sales', 'Penjualan'],
+    ['/app/refunds', 'Refund'],
   ];
   return (
     <div className="workspace">
@@ -1212,6 +1213,74 @@ function InventoryAdjustment() {
     </Layout>
   );
 }
+function Refunds() {
+  const [businesses, setBusinesses] = useState<Business[]>([]);
+  const [refunds, setRefunds] = useState<
+    Array<{
+      id: string;
+      sale_id: string;
+      receipt_number: string | null;
+      amount_minor: number;
+      payment_method: string;
+      reason: string;
+      status: string;
+      created_at: string;
+    }>
+  >([]);
+  const [error, setError] = useState('');
+  useEffect(() => {
+    void api<Business[]>('/api/v1/businesses')
+      .then(async (items) => {
+        setBusinesses(items);
+        const id = items[0]?.id;
+        if (id) setRefunds(await api<typeof refunds>(`/api/v1/businesses/${id}/refunds`));
+      })
+      .catch((err: Error) => setError(err.message));
+  }, []);
+  return (
+    <Layout>
+      <section className="page-heading">
+        <div>
+          <span className="workspace-kicker">REFUND</span>
+          <h1>Pengembalian yang tercatat.</h1>
+          <p>
+            {businesses[0]
+              ? 'Histori refund dari ruang kerja aktif, dengan stok dan alasan yang dapat ditelusuri.'
+              : 'Hubungkan ruang kerja untuk memuat histori refund.'}
+          </p>
+        </div>
+        <span className="panel-label">{refunds.length} REFUND</span>
+      </section>
+      {error ? (
+        <Notice message={error} />
+      ) : refunds.length ? (
+        <div className="data-list">
+          {refunds.map((refund) => (
+            <Link className="data-row sale-row" key={refund.id} to={`/app/sales/${refund.sale_id}`}>
+              <span>
+                <strong>{refund.receipt_number ?? refund.sale_id.slice(0, 8).toUpperCase()}</strong>
+                <small>
+                  {new Date(refund.created_at).toLocaleString('id-ID')} · {refund.reason} ·{' '}
+                  {refund.status}
+                </small>
+              </span>
+              <b>{money(refund.amount_minor)}</b>
+            </Link>
+          ))}
+        </div>
+      ) : (
+        <div className="empty-panel">
+          <span className="empty-number">—</span>
+          <h2>Belum ada refund.</h2>
+          <p>Refund yang diproses dari detail transaksi akan muncul di sini.</p>
+          <Link className="button" to="/app/sales">
+            Lihat penjualan
+          </Link>
+        </div>
+      )}
+    </Layout>
+  );
+}
 function Reports() {
   const [businesses, setBusinesses] = useState<Business[]>([]);
   const [summary, setSummary] = useState<Record<string, number> | null>(null);
@@ -1321,15 +1390,61 @@ function SaleDetail() {
   const { saleId } = useParams();
   const [sale, setSale] = useState<SaleDetail | null>(null);
   const [error, setError] = useState('');
+  const [refundError, setRefundError] = useState('');
+  const [refundMessage, setRefundMessage] = useState('');
+  const [refundOpen, setRefundOpen] = useState(false);
+  const [reason, setReason] = useState('');
+  const [paymentMethod, setPaymentMethod] = useState('cash');
+  const [quantities, setQuantities] = useState<Record<string, string>>({});
+  const [saving, setSaving] = useState(false);
+  const [businessId, setBusinessId] = useState('');
   useEffect(() => {
     void api<Business[]>('/api/v1/businesses')
       .then(async (items) => {
         const id = items[0]?.id;
-        if (id && saleId)
+        if (id && saleId) {
+          setBusinessId(id);
           setSale(await api<SaleDetail>(`/api/v1/businesses/${id}/sales/${saleId}`));
+        }
       })
       .catch((err: Error) => setError(err.message));
   }, [saleId]);
+  const refundableLines = sale?.lines.filter((line) => line.refundable_quantity > 0) ?? [];
+  const refundTotal = refundableLines.reduce(
+    (total, line) => total + (Number(quantities[line.id] ?? 0) || 0) * line.unit_price_minor,
+    0,
+  );
+  const submitRefund = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!businessId || !saleId) return;
+    setSaving(true);
+    setRefundError('');
+    setRefundMessage('');
+    try {
+      const lines = refundableLines
+        .filter((line) => Number(quantities[line.id] ?? 0) > 0)
+        .map((line) => ({ sale_line_id: line.id, quantity: quantities[line.id] }));
+      const result = await api<{ id: string; amount_minor: number; sale_status: string }>(
+        `/api/v1/businesses/${businessId}/refunds`,
+        {
+          method: 'POST',
+          headers: { 'X-CSRF-Token': getCsrf(), 'Idempotency-Key': crypto.randomUUID() },
+          body: JSON.stringify({ sale_id: saleId, reason, payment_method: paymentMethod, lines }),
+        },
+      );
+      setRefundMessage(
+        `Refund ${result.id.slice(0, 8).toUpperCase()} selesai · ${money(result.amount_minor)} · stok dikembalikan.`,
+      );
+      setRefundOpen(false);
+      setReason('');
+      setQuantities({});
+      setSale(await api<SaleDetail>(`/api/v1/businesses/${businessId}/sales/${saleId}`));
+    } catch (err) {
+      setRefundError((err as Error).message);
+    } finally {
+      setSaving(false);
+    }
+  };
   return (
     <Layout>
       <section className="page-heading">
@@ -1352,43 +1467,118 @@ function SaleDetail() {
       {error ? (
         <Notice message={error} />
       ) : sale ? (
-        <section className="receipt-card">
-          <div className="receipt-meta">
-            <span>Status</span>
-            <strong>{sale.status}</strong>
-            <span>Total</span>
-            <strong>{money(sale.total_minor)}</strong>
-          </div>
-          <div className="receipt-lines">
-            {sale.lines.map((line) => (
-              <div className="receipt-line" key={line.id}>
+        <>
+          <section className="receipt-card">
+            <div className="receipt-meta">
+              <span>Status</span>
+              <strong>{sale.status}</strong>
+              <span>Total</span>
+              <strong>{money(sale.total_minor)}</strong>
+            </div>
+            <div className="receipt-lines">
+              {sale.lines.map((line) => (
+                <div className="receipt-line" key={line.id}>
+                  <span>
+                    <strong>{line.product_name}</strong>
+                    <small>
+                      {line.quantity} × {money(line.unit_price_minor)} · {line.sku} · dapat direfund{' '}
+                      {line.refundable_quantity}
+                    </small>
+                  </span>
+                  <b>{money(line.line_net_minor + line.tax_minor)}</b>
+                </div>
+              ))}
+            </div>
+            <div className="receipt-total">
+              <span>Total dibayar</span>
+              <strong>{money(sale.total_minor)}</strong>
+            </div>
+            {sale.payments.map((payment, index) => (
+              <div className="payment-row" key={`${payment.method}-${index}`}>
+                <span>{payment.method}</span>
                 <span>
-                  <strong>{line.product_name}</strong>
-                  <small>
-                    {line.quantity} × {money(line.unit_price_minor)} · {line.sku}
-                  </small>
+                  {money(payment.amount_minor)}
+                  {payment.change_minor ? ` · Kembalian ${money(payment.change_minor)}` : ''}
                 </span>
-                <b>{money(line.line_net_minor + line.tax_minor)}</b>
               </div>
             ))}
-          </div>
-          <div className="receipt-total">
-            <span>Total dibayar</span>
-            <strong>{money(sale.total_minor)}</strong>
-          </div>
-          {sale.payments.map((payment, index) => (
-            <div className="payment-row" key={`${payment.method}-${index}`}>
-              <span>{payment.method}</span>
-              <span>
-                {money(payment.amount_minor)}
-                {payment.change_minor ? ` · Kembalian ${money(payment.change_minor)}` : ''}
-              </span>
+            {refundableLines.length > 0 && (
+              <button className="button refund-button" onClick={() => setRefundOpen(true)}>
+                Proses refund
+              </button>
+            )}
+          </section>
+          {refundMessage && (
+            <div className="success-notice refund-feedback" role="status">
+              {refundMessage}
             </div>
-          ))}
-        </section>
+          )}
+        </>
       ) : (
         <div className="empty-panel">
           <p>Memuat detail transaksi…</p>
+        </div>
+      )}
+      {refundOpen && (
+        <div className="modal-backdrop">
+          <form className="payment-modal refund-modal" onSubmit={submitRefund}>
+            <div className="panel-header">
+              <div>
+                <span className="workspace-kicker">REFUND TRANSAKSI</span>
+                <h2>{money(refundTotal)}</h2>
+              </div>
+              <button type="button" className="text-button" onClick={() => setRefundOpen(false)}>
+                Tutup
+              </button>
+            </div>
+            <div className="refund-lines">
+              {refundableLines.map((line) => (
+                <label key={line.id}>
+                  {line.product_name}
+                  <span className="refund-available">
+                    Maksimal {line.refundable_quantity} unit · {money(line.unit_price_minor)} per
+                    unit
+                  </span>
+                  <input
+                    min="0"
+                    max={line.refundable_quantity}
+                    inputMode="numeric"
+                    value={quantities[line.id] ?? ''}
+                    onChange={(event) =>
+                      setQuantities((current) => ({
+                        ...current,
+                        [line.id]: event.target.value.replace(/\D/g, ''),
+                      }))
+                    }
+                  />
+                </label>
+              ))}
+            </div>
+            <label>
+              Metode pengembalian
+              <select
+                value={paymentMethod}
+                onChange={(event) => setPaymentMethod(event.target.value)}
+              >
+                <option value="cash">Tunai</option>
+                <option value="bank_transfer">Transfer bank</option>
+                <option value="store_credit">Store credit</option>
+              </select>
+            </label>
+            <label>
+              Alasan refund
+              <textarea
+                required
+                maxLength={500}
+                value={reason}
+                onChange={(event) => setReason(event.target.value)}
+              />
+            </label>
+            {refundError && <Notice message={refundError} />}
+            <button className="button" disabled={saving || refundTotal <= 0} type="submit">
+              {saving ? 'Memproses…' : `Konfirmasi refund ${money(refundTotal)}`}
+            </button>
+          </form>
         </div>
       )}
     </Layout>
@@ -1615,6 +1805,14 @@ createRoot(document.getElementById('root')!).render(
           element={
             <RequireAuth>
               <SaleDetail />
+            </RequireAuth>
+          }
+        />
+        <Route
+          path="/app/refunds"
+          element={
+            <RequireAuth>
+              <Refunds />
             </RequireAuth>
           }
         />
