@@ -91,8 +91,7 @@ function Layout({ children }: { children: React.ReactNode }) {
     ['/app/products', 'Produk'],
     ['/app/inventory', 'Stok'],
     ['/app/purchases', 'Pembelian'],
-    ['/app/reports', 'Laporan'],
-    ['/app/sales', 'Penjualan'],
+    ['/app/customers', 'Pelanggan'],
     ['/app/refunds', 'Refund'],
   ];
   return (
@@ -1652,6 +1651,301 @@ function Purchasing() {
     </Layout>
   );
 }
+function Customers() {
+  type Customer = {
+    id: string;
+    customer_code: string;
+    name: string;
+    phone: string | null;
+    email: string | null;
+    total_spend_minor: number;
+    transaction_count: number;
+    last_transaction_at: string | null;
+  };
+  type History = {
+    customer: Customer & { notes: string | null };
+    sales: Array<{
+      id: string;
+      receipt_number: string | null;
+      status: string;
+      total_minor: number;
+      created_at: string;
+    }>;
+    loyalty_ledger: Array<{ points_delta: number; source_type: string; created_at: string }>;
+    credit_ledger: Array<{ amount_delta_minor: number; source_type: string; created_at: string }>;
+    loyalty_account: { points_balance: number };
+    credit_account: { credit_limit_minor: number; balance_minor: number };
+  };
+  const [businesses, setBusinesses] = useState<Business[]>([]);
+  const [customers, setCustomers] = useState<Customer[]>([]);
+  const [selected, setSelected] = useState<History | null>(null);
+  const [name, setName] = useState('');
+  const [code, setCode] = useState('');
+  const [phone, setPhone] = useState('');
+  const [points, setPoints] = useState('');
+  const [creditLimit, setCreditLimit] = useState('');
+  const [payment, setPayment] = useState('');
+  const [error, setError] = useState('');
+  const [success, setSuccess] = useState('');
+  const [saving, setSaving] = useState(false);
+  const businessId = businesses[0]?.id;
+  const loadCustomers = async (id: string) =>
+    setCustomers(await api<Customer[]>(`/api/v1/businesses/${id}/customers`));
+  useEffect(() => {
+    void api<Business[]>('/api/v1/businesses')
+      .then((items) => {
+        setBusinesses(items);
+        if (items[0]) return loadCustomers(items[0].id);
+      })
+      .catch((err: Error) => setError(err.message));
+  }, []);
+  const createCustomer = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!businessId) return;
+    setSaving(true);
+    setError('');
+    setSuccess('');
+    try {
+      await api(`/api/v1/businesses/${businessId}/customers`, {
+        method: 'POST',
+        headers: { 'X-CSRF-Token': getCsrf() },
+        body: JSON.stringify({ name, customer_code: code, phone }),
+      });
+      setName('');
+      setCode('');
+      setPhone('');
+      await loadCustomers(businessId);
+      setSuccess('Pelanggan tersimpan.');
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setSaving(false);
+    }
+  };
+  const openCustomer = async (id: string) => {
+    if (!businessId) return;
+    try {
+      setSelected(await api<History>(`/api/v1/businesses/${businessId}/customers/${id}/history`));
+    } catch (err) {
+      setError((err as Error).message);
+    }
+  };
+  const post = async (path: string, body: unknown, message: string) => {
+    if (!businessId || !selected) return;
+    setSaving(true);
+    setError('');
+    setSuccess('');
+    try {
+      await api(`/api/v1/businesses/${businessId}/customers/${selected.customer.id}/${path}`, {
+        method: path === 'credit' ? 'PUT' : 'POST',
+        headers: { 'X-CSRF-Token': getCsrf() },
+        body: JSON.stringify(body),
+      });
+      await openCustomer(selected.customer.id);
+      setSuccess(message);
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setSaving(false);
+    }
+  };
+  return (
+    <Layout>
+      <section className="page-heading">
+        <div>
+          <span className="workspace-kicker">PELANGGAN</span>
+          <h1>Relasi yang terlihat jelas.</h1>
+          <p>Profil, riwayat transaksi, loyalty, dan piutang dalam konteks bisnis yang sama.</p>
+        </div>
+        <span className="panel-label">{customers.length} PELANGGAN</span>
+      </section>
+      {error && <Notice message={error} />}
+      {success && (
+        <div className="success-notice" role="status">
+          {success}
+        </div>
+      )}
+      <div className="purchasing-grid">
+        <section className="panel">
+          <div className="panel-header">
+            <h2>Pelanggan baru</h2>
+            <span className="panel-label">CRM</span>
+          </div>
+          <form className="compact-form" onSubmit={createCustomer}>
+            <label>
+              Nama
+              <input
+                required
+                maxLength={120}
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+              />
+            </label>
+            <label>
+              Kode
+              <input
+                maxLength={40}
+                value={code}
+                onChange={(e) => setCode(e.target.value.toUpperCase())}
+                placeholder="Otomatis bila kosong"
+              />
+            </label>
+            <label>
+              Telepon
+              <input value={phone} onChange={(e) => setPhone(e.target.value)} />
+            </label>
+            <button className="button" disabled={saving} type="submit">
+              Tambah pelanggan
+            </button>
+          </form>
+        </section>
+        <section className="panel">
+          <div className="panel-header">
+            <h2>Daftar pelanggan</h2>
+            <span className="panel-label">TERBARU</span>
+          </div>
+          {customers.length ? (
+            <div className="mini-list">
+              {customers.map((customer) => (
+                <button
+                  className="customer-row"
+                  key={customer.id}
+                  type="button"
+                  onClick={() => void openCustomer(customer.id)}
+                >
+                  <span>
+                    <strong>{customer.name}</strong>
+                    <small>
+                      {customer.customer_code} · {customer.phone ?? 'Tanpa telepon'} ·{' '}
+                      {customer.transaction_count} transaksi
+                    </small>
+                  </span>
+                  <b>{money(customer.total_spend_minor)}</b>
+                </button>
+              ))}
+            </div>
+          ) : (
+            <p className="muted-copy">Belum ada pelanggan.</p>
+          )}
+        </section>
+      </div>
+      {selected && (
+        <div className="modal-backdrop">
+          <section className="payment-modal customer-modal">
+            <div className="panel-header">
+              <div>
+                <span className="workspace-kicker">PROFIL PELANGGAN</span>
+                <h2>{selected.customer.name}</h2>
+              </div>
+              <button className="text-button" type="button" onClick={() => setSelected(null)}>
+                Tutup
+              </button>
+            </div>
+            <p className="muted-copy">
+              {selected.customer.customer_code} · {selected.customer.phone ?? 'Tanpa telepon'} ·{' '}
+              {selected.customer.email ?? 'Tanpa email'}
+            </p>
+            <div className="metric-grid">
+              <Metric label="Belanja" value={money(selected.customer.total_spend_minor)} />
+              <Metric label="Transaksi" value={String(selected.customer.transaction_count)} />
+              <Metric label="Loyalty" value={`${selected.loyalty_account.points_balance} poin`} />
+              <Metric
+                label="Piutang"
+                value={`${money(selected.credit_account.balance_minor)} / ${money(selected.credit_account.credit_limit_minor)}`}
+              />
+            </div>
+            <div className="customer-controls">
+              <label>
+                Atur loyalty points
+                <input
+                  inputMode="numeric"
+                  value={points}
+                  onChange={(e) => setPoints(e.target.value.replace(/^-?\D/g, ''))}
+                  placeholder="+ / - points"
+                />
+              </label>
+              <button
+                className="button secondary"
+                disabled={saving || !points}
+                onClick={() =>
+                  void post(
+                    'loyalty/adjust',
+                    {
+                      points_delta: Number(points),
+                      reason: 'Penyesuaian manual dari profil pelanggan',
+                    },
+                    'Loyalty diperbarui.',
+                  )
+                }
+              >
+                Sesuaikan
+              </button>
+              <label>
+                Limit kredit
+                <input
+                  inputMode="numeric"
+                  value={creditLimit}
+                  onChange={(e) => setCreditLimit(e.target.value.replace(/\D/g, ''))}
+                  placeholder="Rupiah"
+                />
+              </label>
+              <button
+                className="button secondary"
+                disabled={saving || !creditLimit}
+                onClick={() =>
+                  void post(
+                    'credit',
+                    { credit_limit_minor: Number(creditLimit) },
+                    'Limit kredit diperbarui.',
+                  )
+                }
+              >
+                Simpan limit
+              </button>
+              <label>
+                Bayar piutang
+                <input
+                  inputMode="numeric"
+                  value={payment}
+                  onChange={(e) => setPayment(e.target.value.replace(/\D/g, ''))}
+                  placeholder="Rupiah"
+                />
+              </label>
+              <button
+                className="button secondary"
+                disabled={saving || !payment}
+                onClick={() =>
+                  void post(
+                    'credit/payment',
+                    { amount_minor: Number(payment) },
+                    'Pembayaran piutang tercatat.',
+                  )
+                }
+              >
+                Catat pembayaran
+              </button>
+            </div>
+            <h3>Riwayat transaksi</h3>
+            <div className="mini-list">
+              {selected.sales.map((sale) => (
+                <div className="mini-row" key={sale.id}>
+                  <span>
+                    <strong>{sale.receipt_number ?? sale.id.slice(0, 8)}</strong>
+                    <small>
+                      {sale.status} · {new Date(sale.created_at).toLocaleString('id-ID')}
+                    </small>
+                  </span>
+                  <b>{money(sale.total_minor)}</b>
+                </div>
+              ))}
+              {!selected.sales.length && <p className="muted-copy">Belum ada transaksi.</p>}
+            </div>
+          </section>
+        </div>
+      )}
+    </Layout>
+  );
+}
 function Refunds() {
   const [businesses, setBusinesses] = useState<Business[]>([]);
   const [refunds, setRefunds] = useState<
@@ -2260,6 +2554,14 @@ createRoot(document.getElementById('root')!).render(
           element={
             <RequireAuth>
               <Purchasing />
+            </RequireAuth>
+          }
+        />
+        <Route
+          path="/app/customers"
+          element={
+            <RequireAuth>
+              <Customers />
             </RequireAuth>
           }
         />

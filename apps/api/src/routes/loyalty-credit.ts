@@ -61,23 +61,37 @@ export function registerLoyaltyCreditRoutes(app: Hono<Env>): void {
       );
     const now = new Date().toISOString();
     const sourceId = createId();
-    await c.env.DB.batch([
-      c.env.DB.prepare(
-        'INSERT INTO loyalty_accounts(id,business_id,customer_id,points_balance,created_at,updated_at) VALUES(?,?,?,?,?,?) ON CONFLICT(business_id,customer_id) DO UPDATE SET points_balance=points_balance+excluded.points_balance,updated_at=excluded.updated_at',
-      ).bind(createId(), membership.businessId, customerId, delta, now, now),
-      c.env.DB.prepare(
-        'INSERT INTO loyalty_ledger(id,business_id,customer_id,points_delta,source_type,source_id,actor_member_id,created_at) VALUES(?,?,?,?,?,?,?,?)',
-      ).bind(
-        createId(),
-        membership.businessId,
-        customerId,
-        delta,
-        'manual_adjustment',
-        sourceId,
-        membership.memberId,
-        now,
-      ),
-    ]);
+    try {
+      const results = await c.env.DB.batch([
+        c.env.DB.prepare(
+          'INSERT INTO loyalty_accounts(id,business_id,customer_id,points_balance,created_at,updated_at) VALUES(?,?,?,?,?,?) ON CONFLICT(business_id,customer_id) DO UPDATE SET points_balance=points_balance+excluded.points_balance,updated_at=excluded.updated_at WHERE points_balance+excluded.points_balance>=0',
+        ).bind(createId(), membership.businessId, customerId, delta, now, now),
+        c.env.DB.prepare(
+          'INSERT INTO loyalty_ledger(id,business_id,customer_id,points_delta,source_type,source_id,actor_member_id,created_at) SELECT ?,?,?,?,?,?,?,? WHERE changes()>0',
+        ).bind(
+          createId(),
+          membership.businessId,
+          customerId,
+          delta,
+          'manual_adjustment',
+          sourceId,
+          membership.memberId,
+          now,
+        ),
+      ]);
+      if (!results[0]?.meta.changes || !results[1]?.meta.changes)
+        return c.json(
+          { error: { code: 'CONFLICT', message: 'Points balance cannot be negative' } },
+          409,
+        );
+    } catch (error) {
+      if (String(error).includes('UNIQUE'))
+        return c.json(
+          { error: { code: 'CONFLICT', message: 'Points adjustment already recorded' } },
+          409,
+        );
+      throw error;
+    }
     const balance = await c.env.DB.prepare(
       'SELECT points_balance FROM loyalty_accounts WHERE business_id=? AND customer_id=?',
     )
@@ -186,24 +200,27 @@ export function registerLoyaltyCreditRoutes(app: Hono<Env>): void {
     if (!account || account.balance_minor + amount > account.credit_limit_minor)
       return c.json({ error: { code: 'CREDIT_LIMIT', message: 'Credit limit exceeded' } }, 409);
     const now = new Date().toISOString();
+    const sourceId = body.source_id.trim();
     try {
-      await c.env.DB.batch([
+      const results = await c.env.DB.batch([
         c.env.DB.prepare(
           'UPDATE credit_accounts SET balance_minor=balance_minor+?,updated_at=? WHERE business_id=? AND customer_id=? AND balance_minor+?<=credit_limit_minor',
         ).bind(amount, now, membership.businessId, customerId, amount),
         c.env.DB.prepare(
-          'INSERT INTO credit_ledger(id,business_id,customer_id,amount_delta_minor,source_type,source_id,actor_member_id,created_at) VALUES(?,?,?,?,?,?,?,?)',
+          'INSERT INTO credit_ledger(id,business_id,customer_id,amount_delta_minor,source_type,source_id,actor_member_id,created_at) SELECT ?,?,?,?,?,?,?,? WHERE changes()>0',
         ).bind(
           createId(),
           membership.businessId,
           customerId,
           amount,
           'charge',
-          body.source_id.trim(),
+          sourceId,
           membership.memberId,
           now,
         ),
       ]);
+      if (!results[0]?.meta.changes || !results[1]?.meta.changes)
+        return c.json({ error: { code: 'CREDIT_LIMIT', message: 'Credit limit exceeded' } }, 409);
     } catch (error) {
       if (String(error).includes('UNIQUE'))
         return c.json(
@@ -212,12 +229,17 @@ export function registerLoyaltyCreditRoutes(app: Hono<Env>): void {
         );
       throw error;
     }
+    const updated = await c.env.DB.prepare(
+      'SELECT balance_minor FROM credit_accounts WHERE business_id=? AND customer_id=?',
+    )
+      .bind(membership.businessId, customerId)
+      .first<{ balance_minor: number }>();
     return c.json(
       {
         data: {
           customer_id: customerId,
           amount_minor: amount,
-          balance_minor: account.balance_minor + amount,
+          balance_minor: updated?.balance_minor ?? account.balance_minor + amount,
         },
       },
       201,
@@ -253,12 +275,12 @@ export function registerLoyaltyCreditRoutes(app: Hono<Env>): void {
       );
     const now = new Date().toISOString();
     const sourceId = createId();
-    await c.env.DB.batch([
+    const results = await c.env.DB.batch([
       c.env.DB.prepare(
         'UPDATE credit_accounts SET balance_minor=balance_minor-?,updated_at=? WHERE business_id=? AND customer_id=? AND balance_minor>=?',
       ).bind(amount, now, membership.businessId, customerId, amount),
       c.env.DB.prepare(
-        'INSERT INTO credit_ledger(id,business_id,customer_id,amount_delta_minor,source_type,source_id,actor_member_id,created_at) VALUES(?,?,?,?,?,?,?,?)',
+        'INSERT INTO credit_ledger(id,business_id,customer_id,amount_delta_minor,source_type,source_id,actor_member_id,created_at) SELECT ?,?,?,?,?,?,?,? WHERE changes()>0',
       ).bind(
         createId(),
         membership.businessId,
@@ -270,6 +292,11 @@ export function registerLoyaltyCreditRoutes(app: Hono<Env>): void {
         now,
       ),
     ]);
+    if (!results[0]?.meta.changes || !results[1]?.meta.changes)
+      return c.json(
+        { error: { code: 'CREDIT_LIMIT', message: 'Payment exceeds outstanding credit' } },
+        409,
+      );
     return c.json(
       { data: { customer_id: customerId, amount_minor: amount, source_id: sourceId } },
       201,

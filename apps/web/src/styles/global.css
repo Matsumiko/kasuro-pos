@@ -633,6 +633,59 @@ h1 {
   max-width: 6rem;
   text-align: right;
 }
+.customer-row {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid var(--color-rule);
+  color: var(--color-ink);
+  cursor: pointer;
+  display: flex;
+  gap: var(--space-md);
+  justify-content: space-between;
+  padding: var(--space-sm) 0;
+  text-align: left;
+  width: 100%;
+}
+.customer-row span {
+  display: grid;
+  gap: 0.2rem;
+  min-width: 0;
+}
+.customer-row small {
+  color: var(--color-muted);
+  font-size: 0.72rem;
+}
+.customer-row b {
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+}
+.customer-modal {
+  max-width: 760px;
+}
+.customer-modal h3 {
+  font-size: 1rem;
+  margin: var(--space-xl) 0 var(--space-sm);
+}
+.customer-controls {
+  display: grid;
+  gap: var(--space-sm);
+  grid-template-columns: minmax(0, 1fr) auto;
+  margin-top: var(--space-lg);
+}
+.customer-controls label {
+  display: grid;
+  font-size: 0.75rem;
+  font-weight: 700;
+  gap: var(--space-xs);
+}
+.customer-controls input {
+  background: var(--color-paper);
+  border: 1px solid var(--color-rule);
+  border-radius: var(--radius-sm);
+  min-width: 0;
+  padding: 0.7rem;
+}
 .dark-panel {
   background: var(--color-ink);
   color: var(--color-paper);

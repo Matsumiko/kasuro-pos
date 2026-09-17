@@ -5,6 +5,55 @@ import { businessContext, requirePermission } from '../middleware/tenant';
 
 export function registerCustomerRoutes(app: Hono<Env>): void {
   app.use('/api/v1/businesses/:businessId/customers', businessContext);
+  app.use('/api/v1/businesses/:businessId/customers/*', businessContext);
+  app.get('/api/v1/businesses/:businessId/customers/:customerId/history', async (c) => {
+    const membership = requirePermission(c, 'customers.view_manage');
+    if (!c.env.DB) return unavailable(c);
+    const customerId = c.req.param('customerId');
+    const customer = await c.env.DB.prepare(
+      "SELECT id,customer_code,name,phone,email,notes,total_spend_minor,transaction_count,last_transaction_at FROM customers WHERE id=? AND business_id=? AND status='active'",
+    )
+      .bind(customerId, membership.businessId)
+      .first();
+    if (!customer) return notFound(c);
+    const [sales, loyalty, credit, loyaltyAccount, creditAccount] = await Promise.all([
+      c.env.DB.prepare(
+        'SELECT id,receipt_number,status,total_minor,created_at FROM sales WHERE business_id=? AND customer_id=? ORDER BY created_at DESC,id DESC LIMIT 50',
+      )
+        .bind(membership.businessId, customerId)
+        .all(),
+      c.env.DB.prepare(
+        'SELECT points_delta,source_type,source_id,created_at FROM loyalty_ledger WHERE business_id=? AND customer_id=? ORDER BY created_at DESC,id DESC LIMIT 50',
+      )
+        .bind(membership.businessId, customerId)
+        .all(),
+      c.env.DB.prepare(
+        'SELECT amount_delta_minor,source_type,source_id,created_at FROM credit_ledger WHERE business_id=? AND customer_id=? ORDER BY created_at DESC,id DESC LIMIT 50',
+      )
+        .bind(membership.businessId, customerId)
+        .all(),
+      c.env.DB.prepare(
+        'SELECT points_balance FROM loyalty_accounts WHERE business_id=? AND customer_id=?',
+      )
+        .bind(membership.businessId, customerId)
+        .first<{ points_balance: number }>(),
+      c.env.DB.prepare(
+        'SELECT credit_limit_minor,balance_minor FROM credit_accounts WHERE business_id=? AND customer_id=?',
+      )
+        .bind(membership.businessId, customerId)
+        .first<{ credit_limit_minor: number; balance_minor: number }>(),
+    ]);
+    return c.json({
+      data: {
+        customer,
+        sales: sales.results,
+        loyalty_ledger: loyalty.results,
+        credit_ledger: credit.results,
+        loyalty_account: loyaltyAccount ?? { points_balance: 0 },
+        credit_account: creditAccount ?? { credit_limit_minor: 0, balance_minor: 0 },
+      },
+    });
+  });
   app.get('/api/v1/businesses/:businessId/customers', async (c) => {
     const membership = requirePermission(c, 'customers.view_manage');
     if (!c.env.DB) return unavailable(c);
@@ -56,6 +105,9 @@ export function registerCustomerRoutes(app: Hono<Env>): void {
     }
     return c.json({ data: { id, customer_code: code, name } }, 201);
   });
+}
+function notFound(c: { json: (body: unknown, status?: 404) => Response }): Response {
+  return c.json({ error: { code: 'NOT_FOUND', message: 'Not found' } }, 404);
 }
 function unavailable(c: { json: (body: unknown, status?: 503) => Response }): Response {
   return c.json({ error: { code: 'CONFIGURATION_ERROR', message: 'Database unavailable' } }, 503);
