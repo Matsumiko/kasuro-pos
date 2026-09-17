@@ -2274,51 +2274,215 @@ function Expenses() {
   );
 }
 function Reports() {
+  type Report = {
+    summary: Record<string, number>;
+    daily: Array<{ report_date: string; transaction_count: number; net_sales_minor: number }>;
+    payments: Array<{ method: string; amount_minor: number; payment_count: number }>;
+    top_products: Array<{ product_name: string; quantity: number; net_sales_minor: number }>;
+  };
   const [businesses, setBusinesses] = useState<Business[]>([]);
-  const [summary, setSummary] = useState<Record<string, number> | null>(null);
+  const [outlets, setOutlets] = useState<Array<{ id: string; name: string; code: string }>>([]);
+  const [report, setReport] = useState<Report | null>(null);
+  const [from, setFrom] = useState(new Date(Date.now() - 29 * 86400000).toISOString().slice(0, 10));
+  const [to, setTo] = useState(new Date().toISOString().slice(0, 10));
+  const [outletId, setOutletId] = useState('');
   const [error, setError] = useState('');
+  const [loading, setLoading] = useState(true);
+  const businessId = businesses[0]?.id;
+  const load = async (id: string, nextFrom = from, nextTo = to, nextOutlet = outletId) => {
+    const query = new URLSearchParams({ date_from: nextFrom, date_to: nextTo });
+    if (nextOutlet) query.set('outlet_id', nextOutlet);
+    setLoading(true);
+    try {
+      setReport(await api<Report>(`/api/v1/businesses/${id}/reports/overview?${query.toString()}`));
+      setError('');
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setLoading(false);
+    }
+  };
   useEffect(() => {
     void api<Business[]>('/api/v1/businesses')
-      .then((items) => {
+      .then(async (items) => {
         setBusinesses(items);
-        if (items[0])
-          return api<Record<string, number>>(`/api/v1/businesses/${items[0].id}/reports/summary`);
-        return null;
+        if (!items[0]) return;
+        const rows = await api<typeof outlets>(`/api/v1/businesses/${items[0].id}/outlets`);
+        setOutlets(rows);
+        await load(items[0].id, from, to, '');
       })
-      .then(setSummary)
-      .catch((err: Error) => setError(err.message));
+      .catch((err: Error) => {
+        setError(err.message);
+        setLoading(false);
+      });
   }, []);
+  const apply = (event: React.FormEvent) => {
+    event.preventDefault();
+    if (businessId) void load(businessId);
+  };
+  const exportHref = businessId
+    ? `${API}/api/v1/businesses/${businessId}/reports/export.csv?date_from=${encodeURIComponent(from)}&date_to=${encodeURIComponent(to)}${outletId ? `&outlet_id=${encodeURIComponent(outletId)}` : ''}`
+    : '#';
+  const summary = report?.summary;
   return (
     <Layout>
       <section className="page-heading">
         <div>
-          <span className="workspace-kicker">LAPORAN</span>
+          <span className="workspace-kicker">LAPORAN OPERASIONAL</span>
           <h1>Keputusan, bukan tebakan.</h1>
           <p>
-            {businesses[0]
-              ? 'Ringkasan operasional ruang kerja aktif.'
-              : 'Hubungkan ruang kerja untuk memuat laporan.'}
+            Penjualan, biaya, pembayaran, dan produk teratas dalam rentang yang bisa ditelusuri.
           </p>
         </div>
-        <span className="panel-label">HARI INI</span>
+        <a className="button small" href={exportHref} download="kasuro-report.csv">
+          Ekspor CSV
+        </a>
       </section>
-      {error ? (
-        <Notice message={error} />
-      ) : summary ? (
-        <div className="metric-grid">
-          <Metric label="Penjualan bersih" value={money(summary.net_sales_minor)} />
-          <Metric label="Transaksi" value={String(summary.transaction_count ?? 0)} />
-          <Metric label="Laba kotor" value={money(summary.gross_profit_minor)} />
-          <Metric label="Biaya operasional" value={money(summary.expenses_minor)} />
+      {error && <Notice message={error} />}
+      <section className="panel">
+        <div className="panel-header">
+          <h2>Rentang laporan</h2>
+          <span className="panel-label">MAKS 366 HARI</span>
         </div>
+        <form className="compact-form" onSubmit={apply}>
+          <div className="form-grid">
+            <label>
+              Dari
+              <input
+                type="date"
+                required
+                value={from}
+                onChange={(event) => setFrom(event.target.value)}
+              />
+            </label>
+            <label>
+              Sampai
+              <input
+                type="date"
+                required
+                value={to}
+                onChange={(event) => setTo(event.target.value)}
+              />
+            </label>
+          </div>
+          <label>
+            Outlet
+            <select value={outletId} onChange={(event) => setOutletId(event.target.value)}>
+              <option value="">Semua outlet yang diizinkan</option>
+              {outlets.map((outlet) => (
+                <option key={outlet.id} value={outlet.id}>
+                  {outlet.name} · {outlet.code}
+                </option>
+              ))}
+            </select>
+          </label>
+          <button className="button secondary" disabled={loading || !businessId} type="submit">
+            {loading ? 'Memuat…' : 'Terapkan filter'}
+          </button>
+        </form>
+      </section>
+      {loading && !report ? (
+        <div className="empty-panel">
+          <span className="empty-number">…</span>
+          <h2>Memuat laporan.</h2>
+          <p>Mengambil data dalam ruang lingkup bisnis aktif.</p>
+        </div>
+      ) : report ? (
+        <>
+          <div className="metric-grid">
+            <Metric label="Penjualan bersih" value={money(summary?.net_sales_minor)} />
+            <Metric label="Transaksi" value={String(summary?.transaction_count ?? 0)} />
+            <Metric label="Laba kotor" value={money(summary?.gross_profit_minor)} />
+            <Metric label="Hasil operasional" value={money(summary?.operating_result_minor)} />
+          </div>
+          <section className="dashboard-grid">
+            <article className="panel">
+              <div className="panel-header">
+                <h2>Tren harian</h2>
+                <span className="panel-label">{report.daily.length} HARI</span>
+              </div>
+              {report.daily.length ? (
+                <div className="data-list">
+                  {report.daily.map((day) => (
+                    <div className="data-row" key={day.report_date}>
+                      <span>
+                        <strong>{day.report_date}</strong>
+                        <small>{day.transaction_count} transaksi</small>
+                      </span>
+                      <b>{money(day.net_sales_minor)}</b>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <EmptyReport text="Belum ada penjualan pada rentang ini." />
+              )}
+            </article>
+            <article className="panel">
+              <div className="panel-header">
+                <h2>Metode pembayaran</h2>
+                <span className="panel-label">MIX</span>
+              </div>
+              {report.payments.length ? (
+                <div className="data-list">
+                  {report.payments.map((payment) => (
+                    <div className="data-row" key={payment.method}>
+                      <span>
+                        <strong>{payment.method}</strong>
+                        <small>{payment.payment_count} pembayaran</small>
+                      </span>
+                      <b>{money(payment.amount_minor)}</b>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <EmptyReport text="Belum ada pembayaran tercatat." />
+              )}
+            </article>
+          </section>
+          <section className="panel">
+            <div className="panel-header">
+              <h2>Produk teratas</h2>
+              <span className="panel-label">TOP 10</span>
+            </div>
+            {report.top_products.length ? (
+              <div className="data-list">
+                {report.top_products.map((product) => (
+                  <div className="data-row" key={product.product_name}>
+                    <span>
+                      <strong>{product.product_name}</strong>
+                      <small>{product.quantity} unit terjual</small>
+                    </span>
+                    <b>{money(product.net_sales_minor)}</b>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <EmptyReport text="Belum ada produk terjual pada rentang ini." />
+            )}
+          </section>
+          <section className="metric-grid">
+            <Metric label="Diskon" value={money(summary?.discounts_minor)} />
+            <Metric label="Pajak" value={money(summary?.tax_minor)} />
+            <Metric label="HPP" value={money(summary?.cogs_minor)} />
+            <Metric label="Biaya operasional" value={money(summary?.expenses_minor)} />
+          </section>
+        </>
       ) : (
         <div className="empty-panel">
           <span className="empty-number">—</span>
           <h2>Belum ada laporan.</h2>
-          <p>Ringkasan akan terisi setelah transaksi dan biaya tercatat.</p>
+          <p>Hubungkan ruang kerja untuk memuat ringkasan.</p>
         </div>
       )}
     </Layout>
+  );
+}
+function EmptyReport({ text }: { text: string }) {
+  return (
+    <div className="empty-panel">
+      <span className="empty-number">—</span>
+      <p>{text}</p>
+    </div>
   );
 }
 function Sales() {
