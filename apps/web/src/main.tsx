@@ -24,6 +24,13 @@ if ('serviceWorker' in navigator) void navigator.serviceWorker.register('/sw.js'
 const API =
   import.meta.env.VITE_API_ORIGIN ??
   (import.meta.env.PROD ? 'https://kasuro-api.fadztech12.workers.dev' : 'http://localhost:8787');
+let authToken = '';
+let csrfToken = '';
+
+async function bootstrapCsrf(): Promise<void> {
+  const result = await api<{ token: string }>('/api/v1/auth/csrf');
+  csrfToken = result.token;
+}
 
 type Product = {
   variant_id: string;
@@ -70,6 +77,7 @@ type SaleDetail = SaleSummary & {
 
 async function api<T>(path: string, options: RequestInit = {}): Promise<T> {
   const headers = new Headers(options.headers);
+  if (authToken) headers.set('Authorization', `Bearer ${authToken}`);
   if (options.body && !headers.has('content-type')) headers.set('content-type', 'application/json');
   const response = await fetch(`${API}${path}`, { credentials: 'include', ...options, headers });
   const text = await response.text();
@@ -81,12 +89,6 @@ async function api<T>(path: string, options: RequestInit = {}): Promise<T> {
   }
   if (!response.ok) throw new Error(body.error?.message ?? 'Permintaan gagal');
   return body.data as T;
-}
-let csrfToken = '';
-
-async function bootstrapCsrf(): Promise<void> {
-  const result = await api<{ token: string }>('/api/v1/auth/csrf');
-  csrfToken = result.token;
 }
 
 function Layout({ children }: { children: React.ReactNode }) {
@@ -3320,14 +3322,18 @@ function Auth({
       return;
     }
     try {
-      const result = await api<{ csrf_token?: string }>(`/api/v1/auth/${mode}`, {
-        method: 'POST',
-        body: JSON.stringify(
-          mode === 'register'
-            ? { email: normalizedEmail, password, display_name: name.trim() }
-            : { email: normalizedEmail, password },
-        ),
-      });
+      const result = await api<{ csrf_token?: string; auth_token?: string }>(
+        `/api/v1/auth/${mode}`,
+        {
+          method: 'POST',
+          body: JSON.stringify(
+            mode === 'register'
+              ? { email: normalizedEmail, password, display_name: name.trim() }
+              : { email: normalizedEmail, password },
+          ),
+        },
+      );
+      if (result.auth_token) authToken = result.auth_token;
       if (result.csrf_token) csrfToken = result.csrf_token;
       navigate(mode === 'register' ? '/setup' : redirectTo);
     } catch (err) {

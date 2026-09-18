@@ -7,7 +7,12 @@ export type AuthUser = { id: string; email: string; displayName: string };
 export type SessionContext = { user: AuthUser; sessionId: string; csrfTokenHash: string };
 
 export const sessionMiddleware: MiddlewareHandler<Env> = async (c, next) => {
-  const token = getCookie(c.req.header('Cookie'), c.env.SESSION_COOKIE_NAME ?? 'kasuro_session');
+  const cookieToken = getCookie(
+    c.req.header('Cookie'),
+    c.env.SESSION_COOKIE_NAME ?? 'kasuro_session',
+  );
+  const bearer = c.req.header('Authorization')?.match(/^Bearer\s+(.+)$/i)?.[1];
+  const token = cookieToken ?? bearer;
   if (!token || !c.env.DB) return next();
   const tokenHash = await sha256(token);
   const row = await c.env.DB.prepare(
