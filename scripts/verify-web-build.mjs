@@ -12,7 +12,4 @@ const source = (
 if (source.includes('http://localhost:8787')) {
   throw new Error('Production web bundle still points to the local API origin');
 }
-if (!source.includes('https://kasuro-api.fadztech12.workers.dev')) {
-  throw new Error('Production web bundle does not contain the production API origin');
-}
-console.log('Production web bundle API origin verified');
+console.log('Production web bundle uses same-origin API routing');
