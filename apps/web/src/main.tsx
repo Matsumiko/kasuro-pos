@@ -3613,65 +3613,181 @@ createRoot(document.getElementById('root')!).render(
 );
 
 function PublicHome() {
+  const capabilities = [
+    {
+      index: '01',
+      title: 'Kasir yang tidak menghalangi ritme toko.',
+      body: 'Cari produk, buka shift, tahan pesanan, dan selesaikan pembayaran tanpa berpindah-pindah konteks.',
+      link: 'Buka alur kasir',
+    },
+    {
+      index: '02',
+      title: 'Stok dengan jejak yang bisa dijelaskan.',
+      body: 'Setiap penerimaan, penyesuaian, dan penjualan membentuk riwayat yang tetap terbaca oleh tim.',
+      link: 'Lihat cara stok bekerja',
+    },
+    {
+      index: '03',
+      title: 'Outlet dan tim dalam konteks yang sama.',
+      body: 'Atur akses berdasarkan bisnis dan outlet. Yang terlihat oleh setiap orang selalu sesuai tanggung jawabnya.',
+      link: 'Atur ruang kerja',
+    },
+  ];
+
   return (
-    <div className="app-shell">
-      <header className="topbar">
+    <div className="app-shell landing-page">
+      <header className="topbar landing-topbar">
         <Link className="brand" to="/">
           KASU<span>RO</span>
         </Link>
         <nav aria-label="Navigasi utama">
-          <Link to="/features">Fitur</Link>
+          <Link to="/features">Cara kerja</Link>
           <Link to="/pricing">Harga</Link>
           <Link to="/login">Masuk</Link>
         </nav>
       </header>
+
       <main>
-        <section className="hero">
-          <div>
-            <div className="eyebrow">Kasir untuk bisnis yang bergerak</div>
-            <h1>Kasir cepat. Bisnis terkendali.</h1>
+        <section className="landing-hero">
+          <div className="landing-hero-copy">
+            <div className="eyebrow">POS untuk operasional yang nyata</div>
+            <h1>Jual lebih jelas. Kelola lebih tenang.</h1>
             <p>
-              Kelola penjualan, stok, dan tim dari satu ruang kerja yang dibuat untuk ritme toko
-              sehari-hari.
+              Kasuro menyatukan kasir, stok, outlet, dan tim dalam satu ruang kerja yang mengikuti
+              cara bisnis berjalan setiap hari.
             </p>
             <div className="actions">
               <Link className="button" to="/register">
-                Mulai gratis
+                Mulai gratis <span>↗</span>
               </Link>
               <Link className="button secondary" to="/features">
-                Lihat fitur
+                Pelajari cara kerja
               </Link>
             </div>
+            <div className="landing-note">
+              <span className="landing-note-mark">●</span>
+              <span>Mulai dari satu outlet. Siap mengikuti langkah berikutnya.</span>
+            </div>
           </div>
-          <div className="hero-panel">
-            <div className="panel-content">
-              <div className="panel-label">RUANG KERJA HARI INI</div>
-              <div className="panel-number">POS</div>
-              <p className="panel-note">
-                Satu sumber kebenaran untuk kasir, stok, dan keputusan pemilik.
-              </p>
+          <div className="landing-hero-visual" aria-label="Ringkasan ruang kerja Kasuro">
+            <div className="landing-visual-topline">
+              <span>RUANG KERJA</span>
+              <span className="landing-live">
+                <i /> TERHUBUNG
+              </span>
+            </div>
+            <div className="landing-visual-title">
+              Hari ini
+              <br />
+              <b>terkendali.</b>
+            </div>
+            <div className="landing-visual-grid">
+              <div>
+                <span>Kasir</span>
+                <strong>Siap</strong>
+              </div>
+              <div>
+                <span>Stok</span>
+                <strong>Terlihat</strong>
+              </div>
+              <div>
+                <span>Tim</span>
+                <strong>Terarah</strong>
+              </div>
+            </div>
+            <div className="landing-visual-line">
+              <span>Outlet utama</span>
+              <b>Online</b>
             </div>
           </div>
         </section>
-        <section className="section">
-          <h2>Yang penting, terlihat jelas.</h2>
-          <div className="feature-grid">
-            <article className="feature">
-              <strong>Penjualan tanpa friksi</strong>
-              <p>Alur kasir ringkas untuk pencarian cepat, pembayaran, dan struk.</p>
-            </article>
-            <article className="feature">
-              <strong>Stok yang dapat dipercaya</strong>
-              <p>Saldo terkini dan riwayat pergerakan yang menjelaskan setiap perubahan.</p>
-            </article>
-            <article className="feature">
-              <strong>Kontrol lintas outlet</strong>
-              <p>Tim, outlet, dan akses tetap berada dalam konteks bisnis yang tepat.</p>
-            </article>
+
+        <section className="landing-intent" aria-label="Janji produk">
+          <span className="landing-section-mark">KASURO POS</span>
+          <p>
+            Satu tempat untuk mengetahui apa yang terjadi di depan kasir — dan apa yang perlu
+            dilakukan setelahnya.
+          </p>
+        </section>
+
+        <section className="landing-capabilities">
+          <div className="landing-section-heading">
+            <div>
+              <span className="eyebrow">Cara kerja</span>
+              <h2>Yang terjadi di toko, terlihat di satu alur.</h2>
+            </div>
+            <p>
+              Dirancang untuk keputusan kecil yang harus tetap terasa ringan saat toko sedang ramai.
+            </p>
+          </div>
+          <div className="landing-capability-list">
+            {capabilities.map((capability) => (
+              <article className="landing-capability" key={capability.index}>
+                <span className="landing-capability-index">{capability.index}</span>
+                <div>
+                  <h3>{capability.title}</h3>
+                  <p>{capability.body}</p>
+                  <span className="landing-capability-link">
+                    {capability.link} <b>↗</b>
+                  </span>
+                </div>
+              </article>
+            ))}
+          </div>
+        </section>
+
+        <section className="landing-operations">
+          <div className="landing-operations-copy">
+            <span className="eyebrow">Dibuat untuk bergerak</span>
+            <h2>Bukan sekadar mencatat transaksi.</h2>
+            <p>
+              Kasuro menjaga hubungan antara penjualan, stok, dan orang yang menjalankannya. Jadi
+              ketika hari selesai, kamu tidak perlu menebak-nebak apa yang berubah.
+            </p>
+            <Link className="text-link" to="/register">
+              Bangun ruang kerja pertama <span>↗</span>
+            </Link>
+          </div>
+          <div className="landing-operations-list">
+            <div>
+              <span>Penjualan</span>
+              <b>Masuk ke laporan</b>
+              <i>01</i>
+            </div>
+            <div>
+              <span>Stok</span>
+              <b>Berubah dengan jejak</b>
+              <i>02</i>
+            </div>
+            <div>
+              <span>Tim</span>
+              <b>Bekerja sesuai akses</b>
+              <i>03</i>
+            </div>
+          </div>
+        </section>
+
+        <section className="landing-cta">
+          <div>
+            <span className="eyebrow">Mulai dari yang penting</span>
+            <h2>Ruang kerja yang terasa lebih ringan.</h2>
+          </div>
+          <div>
+            <p>
+              Siapkan bisnis dan outlet pertama. Sisanya bisa dibangun seiring ritme operasionalmu.
+            </p>
+            <Link className="button" to="/register">
+              Mulai gratis <span>↗</span>
+            </Link>
           </div>
         </section>
       </main>
-      <footer className="footer">KASURO POS · Dibuat untuk operasional nyata.</footer>
+
+      <footer className="footer landing-footer">
+        <span>KASURO POS</span>
+        <span>Jelas di kasir. Terkendali di belakang.</span>
+        <span>© 2026</span>
+      </footer>
     </div>
   );
 }
