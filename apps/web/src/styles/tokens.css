@@ -1,0 +1,53 @@
+/* Hallmark · token export · Kasuro Field Notes · Workbench / Control Room */
+:root {
+  --color-paper: oklch(96% 0.014 88);
+  --color-paper-2: oklch(93% 0.018 84);
+  --color-surface: oklch(99% 0.008 90);
+  --color-surface-raised: oklch(100% 0 0);
+  --color-ink: oklch(22% 0.028 255);
+  --color-ink-2: oklch(38% 0.028 255);
+  --color-muted: oklch(55% 0.028 255);
+  --color-rule: oklch(84% 0.024 88);
+  --color-accent: oklch(57% 0.15 42);
+  --color-accent-soft: oklch(91% 0.055 52);
+  --color-accent-ink: oklch(30% 0.075 42);
+  --color-positive: oklch(54% 0.14 150);
+  --color-positive-soft: oklch(92% 0.05 150);
+  --color-negative: oklch(55% 0.16 25);
+  --color-negative-soft: oklch(93% 0.045 25);
+  --color-focus: oklch(48% 0.15 245);
+
+  --font-display: 'Manrope', sans-serif;
+  --font-body: 'Manrope', sans-serif;
+  --font-mono: 'DM Mono', monospace;
+
+  --space-3xs: 0.25rem;
+  --space-2xs: 0.5rem;
+  --space-xs: 0.75rem;
+  --space-sm: 1rem;
+  --space-md: 1.5rem;
+  --space-lg: 2rem;
+  --space-xl: 3rem;
+  --space-2xl: 4.5rem;
+  --space-3xl: 7rem;
+
+  --text-xs: 0.72rem;
+  --text-sm: 0.875rem;
+  --text-md: 1rem;
+  --text-lg: 1.25rem;
+  --text-xl: 1.75rem;
+  --text-2xl: 2.5rem;
+  --text-display: clamp(3rem, 6vw, 5.8rem);
+
+  --radius-sm: 0.5rem;
+  --radius-md: 0.75rem;
+  --radius-lg: 1rem;
+  --radius-pill: 999px;
+
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-in: cubic-bezier(0.7, 0, 0.84, 0);
+  --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+  --dur-fast: 140ms;
+  --dur-base: 220ms;
+  --dur-slow: 360ms;
+}

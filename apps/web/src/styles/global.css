@@ -1,28 +1,8 @@
 /* Hallmark · macrostructure: Marquee Hero · tone: operational editorial · anchor hue: ink */
 @import url('https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Manrope:wght@400;500;600;700;800&display=swap');
-
+@import './tokens.css';
 :root {
-  --color-paper: oklch(96% 0.012 85);
-  --color-surface: oklch(99% 0.006 85);
-  --color-ink: oklch(23% 0.025 255);
-  --color-muted: oklch(54% 0.025 255);
-  --color-rule: oklch(86% 0.02 85);
-  --color-accent: oklch(52% 0.15 35);
-  --color-accent-soft: oklch(91% 0.055 45);
-  --color-focus: oklch(48% 0.15 245);
-  --font-display: 'Manrope', sans-serif;
-  --font-body: 'Manrope', sans-serif;
-  --font-mono: 'DM Mono', monospace;
-  --space-xs: 0.25rem;
-  --space-sm: 0.5rem;
-  --space-md: 1rem;
-  --space-lg: 1.5rem;
-  --space-xl: 2.5rem;
-  --space-2xl: 4rem;
-  --radius-sm: 0.45rem;
-  --radius-md: 0.8rem;
-  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
-  --dur-fast: 140ms;
+  color-scheme: light;
 }
 
 * {
@@ -126,7 +106,7 @@ h1 {
     background var(--dur-fast) var(--ease-out);
 }
 .button:hover {
-  background: oklch(46% 0.15 35);
+  background: var(--color-accent-ink);
   transform: translateY(-2px);
 }
 .button:active {
@@ -150,7 +130,7 @@ h1 {
   position: relative;
 }
 .hero-panel::before {
-  border: 1px solid oklch(70% 0.03 85 / 0.3);
+  border-color: color-mix(in oklab, var(--color-paper) 28%, transparent);
   content: '';
   inset: var(--space-lg);
   position: absolute;
@@ -162,7 +142,7 @@ h1 {
   right: var(--space-xl);
 }
 .panel-label {
-  color: oklch(78% 0.04 85);
+  color: color-mix(in oklab, var(--color-paper) 78%, transparent);
   font-family: var(--font-mono);
   font-size: 0.75rem;
 }
@@ -174,7 +154,7 @@ h1 {
   margin-top: var(--space-md);
 }
 .panel-note {
-  color: oklch(78% 0.04 85);
+  color: color-mix(in oklab, var(--color-paper) 78%, transparent);
   line-height: 1.5;
   margin: var(--space-md) 0 0;
   max-width: 22ch;
@@ -289,7 +269,7 @@ h1 {
   text-transform: uppercase;
 }
 .sidebar .workspace-label {
-  color: oklch(70% 0.03 85);
+  color: color-mix(in oklab, var(--color-paper) 70%, transparent);
   margin: 4rem 0 var(--space-md);
 }
 .sidebar nav {
@@ -298,17 +278,17 @@ h1 {
 }
 .sidebar nav a {
   border-radius: var(--radius-sm);
-  color: oklch(78% 0.04 85);
+  color: color-mix(in oklab, var(--color-paper) 78%, transparent);
   padding: 0.7rem var(--space-sm);
   text-decoration: none;
 }
 .sidebar nav a:hover,
 .sidebar nav a.active {
-  background: oklch(35% 0.035 255);
+  background: color-mix(in oklab, var(--color-ink) 85%, var(--color-paper));
   color: var(--color-paper);
 }
 .sidebar-foot {
-  color: oklch(78% 0.04 85);
+  color: color-mix(in oklab, var(--color-paper) 78%, transparent);
   display: flex;
   flex-wrap: wrap;
   gap: var(--space-sm);
@@ -317,19 +297,19 @@ h1 {
   font-size: 0.7rem;
 }
 .status-dot {
-  background: oklch(68% 0.16 25);
+  background: var(--color-negative);
   border-radius: 50%;
   height: 0.5rem;
   margin-top: 0.15rem;
   width: 0.5rem;
 }
 .status-dot.online {
-  background: oklch(72% 0.16 145);
+  background: var(--color-positive);
 }
 .text-button {
   background: transparent;
   border: 0;
-  color: oklch(78% 0.04 85);
+  color: color-mix(in oklab, var(--color-paper) 78%, transparent);
   font-family: var(--font-mono);
   font-size: 0.7rem;
   margin-left: auto;
@@ -358,7 +338,7 @@ h1 {
 }
 .connection,
 .shift-pill {
-  color: oklch(42% 0.12 145);
+  color: var(--color-positive);
   font-family: var(--font-mono);
   font-size: 0.7rem;
 }
@@ -512,9 +492,9 @@ h1 {
   margin: 0;
 }
 .success-notice {
-  background: oklch(92% 0.055 145);
-  border: 1px solid oklch(45% 0.12 145);
-  color: oklch(30% 0.08 145);
+  background: var(--color-positive-soft);
+  border: 1px solid var(--color-positive);
+  color: var(--color-ink);
   padding: var(--space-sm) var(--space-md);
 }
 .dashboard-grid {
@@ -695,14 +675,14 @@ h1 {
   min-height: 20rem;
 }
 .dark-panel .panel-label {
-  color: oklch(78% 0.04 85);
+  color: color-mix(in oklab, var(--color-paper) 78%, transparent);
 }
 .dark-panel h2 {
   font-size: clamp(1.8rem, 3vw, 3rem);
   line-height: 1;
 }
 .dark-panel p {
-  color: oklch(78% 0.04 85);
+  color: color-mix(in oklab, var(--color-paper) 78%, transparent);
   line-height: 1.5;
   max-width: 30ch;
 }
@@ -1000,7 +980,7 @@ h1 {
 }
 .modal-backdrop {
   align-items: center;
-  background: oklch(23% 0.025 255 / 0.55);
+  background: color-mix(in oklab, var(--color-ink) 62%, transparent);
   display: flex;
   inset: 0;
   justify-content: center;
@@ -1258,5 +1238,451 @@ h1 {
   .product-tile {
     min-height: 7rem;
     padding: var(--space-sm);
+  }
+}
+/* Hallmark · genre: modern-minimal · macrostructure: Workbench · design-system: design.md · designed-as-app */
+body {
+  background: var(--color-paper);
+  color: var(--color-ink);
+  letter-spacing: -0.01em;
+}
+a,
+button,
+input,
+select,
+textarea {
+  -webkit-tap-highlight-color: transparent;
+}
+a:focus-visible,
+button:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible {
+  outline: 3px solid var(--color-focus);
+  outline-offset: 3px;
+}
+h1,
+h2,
+h3,
+strong,
+button,
+.brand {
+  font-family: var(--font-display);
+  font-style: normal;
+}
+h1,
+h2,
+h3,
+p {
+  overflow-wrap: anywhere;
+}
+.brand {
+  letter-spacing: -0.07em;
+  line-height: 1;
+}
+.topbar {
+  background: color-mix(in oklab, var(--color-paper) 92%, transparent);
+  min-height: 4.75rem;
+  padding-block: var(--space-md);
+  position: relative;
+  z-index: 2;
+}
+.topbar nav {
+  align-items: center;
+  gap: var(--space-md);
+}
+.topbar nav a {
+  border-bottom: 1px solid transparent;
+  padding-block: var(--space-3xs);
+  transition:
+    color var(--dur-fast) var(--ease-out),
+    border-color var(--dur-fast) var(--ease-out);
+}
+.topbar nav a:hover {
+  border-color: var(--color-accent);
+  color: var(--color-accent);
+}
+.hero {
+  align-items: end;
+  min-height: min(46rem, calc(100vh - 4.75rem));
+  padding-block: clamp(var(--space-3xl), 12vw, 10rem) var(--space-3xl);
+}
+.hero h1 {
+  font-size: clamp(3.5rem, 8vw, 8rem);
+  max-width: 7ch;
+}
+.hero p {
+  color: var(--color-ink-2);
+}
+.eyebrow,
+.workspace-kicker,
+.panel-label {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  font-weight: 500;
+  letter-spacing: 0.1em;
+  line-height: 1.35;
+  text-transform: uppercase;
+}
+.eyebrow,
+.workspace-kicker {
+  color: var(--color-accent);
+}
+.button {
+  align-items: center;
+  border-radius: var(--radius-sm);
+  display: inline-flex;
+  gap: var(--space-xs);
+  justify-content: center;
+  min-height: 2.75rem;
+  padding: 0.72rem var(--space-md);
+  transition:
+    background var(--dur-fast) var(--ease-out),
+    border-color var(--dur-fast) var(--ease-out),
+    color var(--dur-fast) var(--ease-out),
+    transform var(--dur-fast) var(--ease-out);
+}
+.button:hover:not(:disabled) {
+  background: var(--color-accent-ink);
+  border-color: var(--color-accent-ink);
+  transform: translateY(-1px);
+}
+.button:active:not(:disabled) {
+  transform: translateY(1px);
+}
+.button.secondary:hover:not(:disabled) {
+  background: var(--color-paper-2);
+  border-color: var(--color-ink-2);
+  color: var(--color-ink);
+}
+.button:disabled,
+.text-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.48;
+}
+.hero-panel,
+.dark-panel {
+  background: var(--color-ink);
+  border-radius: var(--radius-lg);
+  box-shadow: 0 1.5rem 4rem color-mix(in oklab, var(--color-ink) 16%, transparent);
+}
+.hero-panel {
+  min-height: 25rem;
+  overflow: hidden;
+}
+.hero-panel::before {
+  border-color: color-mix(in oklab, var(--color-paper) 28%, transparent);
+}
+.section {
+  padding-block: var(--space-3xl);
+}
+.section h2,
+.page-heading h1,
+.pos-heading h1 {
+  font-size: clamp(2.75rem, 6vw, 5.75rem);
+  letter-spacing: -0.07em;
+}
+.feature-grid {
+  gap: 0;
+}
+.feature {
+  border-radius: 0;
+  min-height: 12rem;
+  padding: var(--space-lg);
+  transition:
+    background var(--dur-base) var(--ease-out),
+    transform var(--dur-base) var(--ease-out);
+}
+.feature:hover {
+  background: var(--color-paper-2);
+  transform: translateY(-3px);
+}
+.workspace {
+  background: var(--color-paper-2);
+}
+.sidebar {
+  background: var(--color-ink);
+  border-right: 1px solid color-mix(in oklab, var(--color-paper) 12%, transparent);
+  padding: var(--space-lg) var(--space-md);
+}
+.sidebar .brand {
+  font-size: 1.35rem;
+}
+.sidebar .workspace-label {
+  margin-top: var(--space-2xl);
+}
+.sidebar nav a {
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  font-size: var(--text-sm);
+  transition:
+    background var(--dur-fast) var(--ease-out),
+    color var(--dur-fast) var(--ease-out);
+}
+.sidebar nav a:hover,
+.sidebar nav a.active {
+  background: color-mix(in oklab, var(--color-paper) 12%, transparent);
+  color: var(--color-paper);
+}
+.sidebar nav a.active {
+  border-color: color-mix(in oklab, var(--color-accent) 65%, transparent);
+  box-shadow: inset 3px 0 var(--color-accent);
+}
+.workspace-main {
+  background: var(--color-paper);
+}
+.workspace-top {
+  background: var(--color-surface);
+  min-height: 4.5rem;
+}
+.page-heading,
+.pos-heading {
+  max-width: 1320px;
+  padding-block: clamp(var(--space-xl), 6vw, var(--space-3xl)) var(--space-lg);
+}
+.page-heading p {
+  color: var(--color-ink-2);
+  line-height: 1.65;
+}
+.metric-grid,
+.data-list {
+  max-width: 1320px;
+}
+.metric {
+  background: var(--color-surface);
+  min-height: 8.5rem;
+  padding: var(--space-md);
+}
+.metric strong {
+  font-size: clamp(1.5rem, 3vw, 2.8rem);
+}
+.panel,
+.catalog-panel,
+.cart-panel,
+.form-panel,
+.receipt-card,
+.payment-modal {
+  background: var(--color-surface);
+  border-color: var(--color-rule);
+  border-radius: var(--radius-md);
+  box-shadow: 0 0.75rem 2rem color-mix(in oklab, var(--color-ink) 5%, transparent);
+}
+.data-row {
+  background: var(--color-surface);
+  border-radius: var(--radius-sm);
+  margin-bottom: var(--space-2xs);
+  transition:
+    background var(--dur-fast) var(--ease-out),
+    border-color var(--dur-fast) var(--ease-out);
+}
+.data-row:hover {
+  background: var(--color-surface-raised);
+  border-color: color-mix(in oklab, var(--color-accent) 48%, var(--color-rule));
+}
+.action-list a {
+  transition:
+    color var(--dur-fast) var(--ease-out),
+    padding-left var(--dur-fast) var(--ease-out);
+}
+.action-list a:hover {
+  padding-left: var(--space-xs);
+}
+.notice,
+.success-notice {
+  border-radius: var(--radius-sm);
+  margin-block: var(--space-md);
+}
+.notice {
+  background: var(--color-accent-soft);
+  border-color: var(--color-accent);
+}
+.success-notice {
+  background: var(--color-positive-soft);
+  border-color: var(--color-positive);
+  color: var(--color-ink);
+}
+.pos-layout {
+  max-width: 1320px;
+}
+.catalog-panel,
+.cart-panel {
+  padding: var(--space-md);
+}
+.pos-controls {
+  align-items: end;
+  border-bottom: 1px solid var(--color-rule);
+  display: grid;
+  gap: var(--space-sm);
+  grid-template-columns: minmax(0, 1fr) minmax(8rem, 0.6fr) auto;
+  margin-bottom: var(--space-md);
+  padding-bottom: var(--space-md);
+}
+.search-wrap input,
+.input-wrap input,
+.form-grid input,
+.form-grid select,
+.compact-form input,
+.compact-form select,
+.purchase-line input,
+.purchase-line select,
+.payment-modal input,
+.refund-modal select,
+.refund-modal textarea,
+.customer-controls input {
+  background: var(--color-paper);
+  border-color: var(--color-rule);
+  border-radius: var(--radius-sm);
+  min-height: 2.75rem;
+  transition:
+    background var(--dur-fast) var(--ease-out),
+    border-color var(--dur-fast) var(--ease-out);
+}
+.search-wrap input:hover,
+.input-wrap input:hover,
+.form-grid input:hover,
+.form-grid select:hover,
+.compact-form input:hover,
+.compact-form select:hover {
+  border-color: var(--color-ink-2);
+}
+.product-grid {
+  gap: var(--space-2xs);
+  grid-template-columns: repeat(auto-fill, minmax(10rem, 1fr));
+}
+.product-tile {
+  background: var(--color-paper);
+  border-radius: var(--radius-sm);
+  min-height: 9rem;
+  transition:
+    background var(--dur-fast) var(--ease-out),
+    border-color var(--dur-fast) var(--ease-out),
+    transform var(--dur-fast) var(--ease-out);
+}
+.product-tile:hover:not(:disabled) {
+  background: var(--color-surface-raised);
+  border-color: var(--color-accent);
+  transform: translateY(-2px);
+}
+.product-tile:disabled {
+  cursor: not-allowed;
+  opacity: 0.48;
+}
+.shift-pill {
+  background: var(--color-positive-soft);
+  border: 1px solid color-mix(in oklab, var(--color-positive) 38%, transparent);
+  border-radius: var(--radius-pill);
+  color: var(--color-positive);
+}
+.cart-panel {
+  position: sticky;
+  top: var(--space-md);
+}
+.cart-total {
+  font-family: var(--font-mono);
+}
+.cart-total strong {
+  font-family: var(--font-display);
+  font-size: clamp(1.5rem, 3vw, 2.25rem);
+}
+.modal-backdrop {
+  background: color-mix(in oklab, var(--color-ink) 62%, transparent);
+  backdrop-filter: blur(4px);
+}
+.auth-page {
+  background:
+    linear-gradient(
+      90deg,
+      color-mix(in oklab, var(--color-paper-2) 72%, transparent) 1px,
+      transparent 1px
+    ),
+    var(--color-paper);
+  background-size: 4rem 4rem;
+  padding-top: var(--space-lg);
+}
+.auth-card {
+  background: color-mix(in oklab, var(--color-surface) 90%, transparent);
+  border: 1px solid var(--color-rule);
+  border-radius: var(--radius-md);
+  box-shadow: 0 1.5rem 4rem color-mix(in oklab, var(--color-ink) 8%, transparent);
+  margin-top: clamp(3rem, 10vh, 7rem);
+  padding: clamp(var(--space-lg), 5vw, var(--space-2xl));
+}
+.auth-card h1 {
+  font-size: clamp(2.5rem, 6vw, 4.8rem);
+  max-width: 9ch;
+}
+.admin-page {
+  background: var(--color-paper-2);
+}
+.admin-header,
+.admin-page .panel {
+  background: var(--color-surface);
+}
+.admin-header {
+  border: 1px solid var(--color-rule);
+  border-radius: var(--radius-md);
+  padding: var(--space-md) var(--space-lg);
+}
+@media (max-width: 768px) {
+  .hero {
+    min-height: auto;
+  }
+  .hero-panel {
+    min-height: 18rem;
+  }
+  .pos-controls {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .pos-controls button {
+    grid-column: 1 / -1;
+  }
+  .cart-panel {
+    position: static;
+  }
+}
+@media (max-width: 480px) {
+  .topbar {
+    align-items: flex-start;
+    gap: var(--space-sm);
+  }
+  .topbar nav {
+    gap: var(--space-sm);
+  }
+  .hero h1,
+  .page-heading h1,
+  .pos-heading h1 {
+    font-size: clamp(2.65rem, 15vw, 4.2rem);
+  }
+  .pos-controls {
+    grid-template-columns: 1fr;
+  }
+  .pos-controls button {
+    grid-column: auto;
+  }
+  .data-row {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+  .data-row b,
+  .data-row .heading-actions {
+    align-self: stretch;
+  }
+  .heading-actions,
+  .receipt-actions {
+    align-items: stretch;
+    flex-direction: column;
+    width: 100%;
+  }
+  .heading-actions .button,
+  .receipt-actions .button {
+    width: 100%;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
   }
 }

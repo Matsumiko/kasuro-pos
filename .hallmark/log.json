@@ -1,0 +1,10 @@
+[
+  {
+    "date": "2026-09-18",
+    "scope": "app",
+    "macrostructure": "Workbench / Control Room",
+    "theme": "Kasuro Field Notes",
+    "enrichment": "none",
+    "brief": "Shared visual system redesign for public, merchant, cashier, auth, setup, and platform admin surfaces"
+  }
+]
