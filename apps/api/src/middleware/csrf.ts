@@ -6,6 +6,7 @@ const MUTATING_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
 
 export const csrfProtection: MiddlewareHandler<Env> = async (c, next) => {
   if (!MUTATING_METHODS.has(c.req.method)) return next();
+  if (c.req.path === '/api/v1/auth/login' || c.req.path === '/api/v1/auth/register') return next();
   const session = c.get('session');
   if (!session) return next();
   const origin = c.req.header('Origin');
