@@ -57,7 +57,7 @@ function withCors(
   result.headers.set('Access-Control-Allow-Origin', origin);
   result.headers.set('Access-Control-Allow-Credentials', 'true');
   result.headers.set('Vary', 'Origin');
-  result.headers.set('Access-Control-Allow-Headers', 'Content-Type, X-CSRF-Token');
+  result.headers.set('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-CSRF-Token');
   result.headers.set('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
   return result;
 }
