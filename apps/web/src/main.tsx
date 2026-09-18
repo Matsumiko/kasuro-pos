@@ -3301,11 +3301,23 @@ function Auth({
   const [error, setError] = useState('');
   const submit = async (event: React.FormEvent) => {
     event.preventDefault();
+    setError('');
+    const normalizedEmail = email.trim().toLowerCase();
+    if (!/^\S+@\S+\.[A-Za-z]{2,}$/.test(normalizedEmail)) {
+      setError('Gunakan email valid, contoh: nama@bisnis.com.');
+      return;
+    }
+    if (password.length < 12) {
+      setError('Password minimal 12 karakter.');
+      return;
+    }
     try {
       await api(`/api/v1/auth/${mode}`, {
         method: 'POST',
         body: JSON.stringify(
-          mode === 'register' ? { email, password, display_name: name } : { email, password },
+          mode === 'register'
+            ? { email: normalizedEmail, password, display_name: name.trim() }
+            : { email: normalizedEmail, password },
         ),
       });
       navigate(mode === 'register' ? '/setup' : redirectTo);
