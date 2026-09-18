@@ -1,2 +1,0 @@
-/api/* https://kasuro-api.fadztech12.workers.dev/api/:splat 200
-/health https://kasuro-api.fadztech12.workers.dev/health 200

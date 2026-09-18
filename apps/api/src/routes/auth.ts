@@ -61,6 +61,7 @@ export function registerAuthRoutes(app: Hono<Env>): void {
         data: {
           user: { id: userId, email: input.email, display_name: input.display_name },
           needs_business_setup: true,
+          csrf_token: session.csrfToken,
         },
       },
       201,
@@ -106,7 +107,10 @@ export function registerAuthRoutes(app: Hono<Env>): void {
       c.env.ENVIRONMENT !== 'local',
     );
     return c.json({
-      data: { user: { id: row.id, email: row.email, display_name: row.display_name } },
+      data: {
+        user: { id: row.id, email: row.email, display_name: row.display_name },
+        csrf_token: session.csrfToken,
+      },
     });
   });
 

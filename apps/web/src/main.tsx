@@ -22,7 +22,8 @@ import './styles/global.css';
 if ('serviceWorker' in navigator) void navigator.serviceWorker.register('/sw.js');
 
 const API =
-  import.meta.env.VITE_API_ORIGIN ?? (import.meta.env.PROD ? '' : 'http://localhost:8787');
+  import.meta.env.VITE_API_ORIGIN ??
+  (import.meta.env.PROD ? 'https://kasuro-api.fadztech12.workers.dev' : 'http://localhost:8787');
 
 type Product = {
   variant_id: string;
@@ -3319,7 +3320,7 @@ function Auth({
       return;
     }
     try {
-      await api(`/api/v1/auth/${mode}`, {
+      const result = await api<{ csrf_token?: string }>(`/api/v1/auth/${mode}`, {
         method: 'POST',
         body: JSON.stringify(
           mode === 'register'
@@ -3327,6 +3328,7 @@ function Auth({
             : { email: normalizedEmail, password },
         ),
       });
+      if (result.csrf_token) csrfToken = result.csrf_token;
       navigate(mode === 'register' ? '/setup' : redirectTo);
     } catch (err) {
       setError((err as Error).message);
