@@ -3007,7 +3007,274 @@ function SaleDetail() {
     </Layout>
   );
 }
-function Auth({ mode }: { mode: 'login' | 'register' }) {
+function Admin() {
+  type Metrics = { users: number; businesses: number; active_businesses: number };
+  type PlatformBusiness = {
+    id: string;
+    name: string;
+    slug: string;
+    status: string;
+    currency_code: string;
+    timezone: string;
+    created_at: string;
+  };
+  type PlatformUser = {
+    id: string;
+    email: string;
+    display_name: string;
+    status: string;
+    active_businesses: number;
+    is_platform_admin: number;
+  };
+  type Flag = { key: string; description: string; enabled: number };
+  type Audit = {
+    id: string;
+    action: string;
+    entity_type: string;
+    entity_id: string;
+    summary_json: string;
+    created_at: string;
+  };
+  const navigate = useNavigate();
+  const [metrics, setMetrics] = useState<Metrics | null>(null);
+  const [businesses, setBusinesses] = useState<PlatformBusiness[]>([]);
+  const [users, setUsers] = useState<PlatformUser[]>([]);
+  const [flags, setFlags] = useState<Flag[]>([]);
+  const [audit, setAudit] = useState<Audit[]>([]);
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState('');
+  const load = async () => {
+    try {
+      const [nextMetrics, nextBusinesses, nextUsers, nextFlags, nextAudit] = await Promise.all([
+        api<Metrics>('/api/v1/platform/metrics'),
+        api<PlatformBusiness[]>('/api/v1/platform/businesses'),
+        api<PlatformUser[]>('/api/v1/platform/users'),
+        api<Flag[]>('/api/v1/platform/feature-flags'),
+        api<Audit[]>('/api/v1/platform/audit'),
+      ]);
+      setMetrics(nextMetrics);
+      setBusinesses(nextBusinesses);
+      setUsers(nextUsers);
+      setFlags(nextFlags);
+      setAudit(nextAudit);
+    } catch (err) {
+      if (
+        (err as Error).message.toLowerCase().includes('unauthorized') ||
+        (err as Error).message.toLowerCase().includes('forbidden')
+      )
+        navigate('/admin/login', { replace: true });
+      else setError((err as Error).message);
+    }
+  };
+  useEffect(() => {
+    void load();
+  }, []);
+  const changeStatus = async (businessId: string, status: 'active' | 'suspended' | 'disabled') => {
+    setBusy(businessId);
+    setError('');
+    try {
+      await api(`/api/v1/platform/businesses/${businessId}/status`, {
+        method: 'POST',
+        headers: { 'X-CSRF-Token': getCsrf() },
+        body: JSON.stringify({ status }),
+      });
+      await load();
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setBusy('');
+    }
+  };
+  const assignPlan = async (businessId: string) => {
+    const planKey = window.prompt('Plan key', 'starter');
+    if (!planKey) return;
+    setBusy(businessId);
+    setError('');
+    try {
+      await api(`/api/v1/platform/businesses/${businessId}/plan`, {
+        method: 'POST',
+        headers: { 'X-CSRF-Token': getCsrf() },
+        body: JSON.stringify({ plan_key: planKey }),
+      });
+      await load();
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setBusy('');
+    }
+  };
+  const toggleFlag = async (flag: Flag) => {
+    setBusy(flag.key);
+    setError('');
+    try {
+      await api(`/api/v1/platform/feature-flags/${flag.key}`, {
+        method: 'PATCH',
+        headers: { 'X-CSRF-Token': getCsrf() },
+        body: JSON.stringify({ enabled: !flag.enabled }),
+      });
+      await load();
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setBusy('');
+    }
+  };
+  return (
+    <main className="admin-page">
+      <header className="admin-header">
+        <div>
+          <Link className="brand" to="/">
+            KASU<span>RO</span>
+          </Link>
+          <span className="workspace-kicker"> PLATFORM CONTROL</span>
+        </div>
+        <button
+          className="text-button"
+          onClick={() => {
+            void api('/api/v1/auth/logout', {
+              method: 'POST',
+              headers: { 'X-CSRF-Token': getCsrf() },
+            }).then(() => navigate('/admin/login'));
+          }}
+        >
+          Keluar
+        </button>
+      </header>
+      <section className="page-heading">
+        <div>
+          <span className="workspace-kicker">PLATFORM ADMINISTRATION</span>
+          <h1>Operasi platform, tanpa menembus data merchant.</h1>
+          <p>
+            Metadata, status, paket, feature flag, dan audit. Data finansial tenant tidak
+            ditampilkan.
+          </p>
+        </div>
+        <span className="panel-label">RESTRICTED</span>
+      </section>
+      {error && <Notice message={error} />}
+      {metrics && (
+        <section className="metric-grid">
+          <Metric label="Pengguna" value={String(metrics.users)} />
+          <Metric label="Bisnis" value={String(metrics.businesses)} />
+          <Metric label="Bisnis aktif" value={String(metrics.active_businesses)} />
+        </section>
+      )}
+      <div className="dashboard-grid">
+        <section className="panel">
+          <div className="panel-header">
+            <h2>Bisnis</h2>
+            <span className="panel-label">METADATA</span>
+          </div>
+          <div className="data-list">
+            {businesses.map((business) => (
+              <div className="data-row" key={business.id}>
+                <span>
+                  <strong>{business.name}</strong>
+                  <small>
+                    {business.slug} · {business.status} · {business.timezone}
+                  </small>
+                </span>
+                <span className="heading-actions">
+                  <button
+                    className="text-button"
+                    disabled={busy === business.id}
+                    onClick={() =>
+                      void changeStatus(
+                        business.id,
+                        business.status === 'active' ? 'suspended' : 'active',
+                      )
+                    }
+                  >
+                    {business.status === 'active' ? 'Suspend' : 'Aktifkan'}
+                  </button>
+                  <button
+                    className="text-button"
+                    disabled={busy === business.id}
+                    onClick={() => void assignPlan(business.id)}
+                  >
+                    Plan
+                  </button>
+                </span>
+              </div>
+            ))}
+          </div>
+        </section>
+        <section className="panel">
+          <div className="panel-header">
+            <h2>Feature flags</h2>
+            <span className="panel-label">CONTROLLED</span>
+          </div>
+          <div className="data-list">
+            {flags.map((flag) => (
+              <button
+                className="data-row"
+                key={flag.key}
+                disabled={busy === flag.key}
+                onClick={() => void toggleFlag(flag)}
+              >
+                <span>
+                  <strong>{flag.key}</strong>
+                  <small>{flag.description}</small>
+                </span>
+                <b>{flag.enabled ? 'ON' : 'OFF'}</b>
+              </button>
+            ))}
+          </div>
+        </section>
+      </div>
+      <div className="dashboard-grid">
+        <section className="panel">
+          <div className="panel-header">
+            <h2>Pengguna</h2>
+            <span className="panel-label">IDENTITAS</span>
+          </div>
+          <div className="data-list">
+            {users.map((user) => (
+              <div className="data-row" key={user.id}>
+                <span>
+                  <strong>{user.display_name}</strong>
+                  <small>
+                    {user.email} · {user.active_businesses} bisnis
+                  </small>
+                </span>
+                <b>{user.status}</b>
+              </div>
+            ))}
+          </div>
+        </section>
+        <section className="panel">
+          <div className="panel-header">
+            <h2>Audit platform</h2>
+            <span className="panel-label">100 TERAKHIR</span>
+          </div>
+          <div className="data-list">
+            {audit.map((event) => (
+              <div className="data-row" key={event.id}>
+                <span>
+                  <strong>{event.action}</strong>
+                  <small>
+                    {event.entity_type}/{event.entity_id} ·{' '}
+                    {new Date(event.created_at).toLocaleString('id-ID')}
+                  </small>
+                </span>
+              </div>
+            ))}
+          </div>
+        </section>
+      </div>
+    </main>
+  );
+}
+function AdminLogin() {
+  return <Auth mode="login" redirectTo="/admin" />;
+}
+function Auth({
+  mode,
+  redirectTo = '/app/dashboard',
+}: {
+  mode: 'login' | 'register';
+  redirectTo?: string;
+}) {
   const navigate = useNavigate();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -3022,7 +3289,7 @@ function Auth({ mode }: { mode: 'login' | 'register' }) {
           mode === 'register' ? { email, password, display_name: name } : { email, password },
         ),
       });
-      navigate(mode === 'register' ? '/setup' : '/app/dashboard');
+      navigate(mode === 'register' ? '/setup' : redirectTo);
     } catch (err) {
       setError((err as Error).message);
     }
@@ -3148,6 +3415,15 @@ createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <BrowserRouter>
       <Routes>
+        <Route path="/admin/login" element={<AdminLogin />} />
+        <Route
+          path="/admin"
+          element={
+            <RequireAuth>
+              <Admin />
+            </RequireAuth>
+          }
+        />
         <Route path="/" element={<PublicHome />} />
         <Route path="/login" element={<Auth mode="login" />} />
         <Route path="/register" element={<Auth mode="register" />} />

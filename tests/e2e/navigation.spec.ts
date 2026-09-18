@@ -12,6 +12,11 @@ test.describe('public and authenticated navigation', () => {
     await page.getByRole('link', { name: 'Mulai gratis' }).click();
     await expect(page).toHaveURL(/\/register$/);
   });
+  test('platform admin login is a distinct route', async ({ page }) => {
+    await page.goto('/admin/login');
+    await expect(page.getByRole('heading', { name: 'Masuk ke ruang kerja.' })).toBeVisible();
+    await expect(page).toHaveURL(/\/admin\/login$/);
+  });
 
   test('protected operational routes redirect anonymous users', async ({ page }) => {
     for (const path of [
@@ -19,8 +24,8 @@ test.describe('public and authenticated navigation', () => {
       '/app/inventory/adjustments',
       '/app/sales',
       '/app/sales/example',
-      '/app/refunds',
       '/app/import-export',
+      '/admin',
     ]) {
       await page.goto(path);
       await expect(page).toHaveURL(/\/login$/);

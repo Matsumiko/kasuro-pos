@@ -65,9 +65,13 @@ export function registerPlatformRoutes(app: Hono<Env>): void {
     const session = requireSession(c);
     if (!c.env.DB || !(await isPlatformAdmin(c.env.DB, session.user.id)))
       return c.json({ error: { code: 'FORBIDDEN', message: 'Platform access required' } }, 403);
-    const body = await c.req.json<{ status?: 'active' | 'suspended' | 'disabled' }>();
-    if (!body.status)
-      return c.json({ error: { code: 'VALIDATION_ERROR', message: 'Status is required' } }, 422);
+    const body = await c.req.json<{ status?: string }>();
+    const statuses = new Set(['active', 'suspended', 'disabled']);
+    if (!body.status || !statuses.has(body.status))
+      return c.json(
+        { error: { code: 'VALIDATION_ERROR', message: 'A supported status is required' } },
+        422,
+      );
     const businessId = c.req.param('businessId');
     const now = new Date().toISOString();
     const updated = await c.env.DB.prepare('UPDATE businesses SET status=?,updated_at=? WHERE id=?')
@@ -89,6 +93,66 @@ export function registerPlatformRoutes(app: Hono<Env>): void {
       )
       .run();
     return c.json({ data: { business_id: businessId, status: body.status } });
+  });
+  app.get('/api/v1/platform/feature-flags', async (c) => {
+    const session = requireSession(c);
+    if (!c.env.DB || !(await isPlatformAdmin(c.env.DB, session.user.id)))
+      return c.json({ error: { code: 'FORBIDDEN', message: 'Platform access required' } }, 403);
+    const rows = await c.env.DB.prepare(
+      'SELECT key,description,enabled,updated_at FROM feature_flags ORDER BY key LIMIT 100',
+    ).all();
+    return c.json({ data: rows.results });
+  });
+  app.patch('/api/v1/platform/feature-flags/:key', async (c) => {
+    const session = requireSession(c);
+    if (!c.env.DB || !(await isPlatformAdmin(c.env.DB, session.user.id)))
+      return c.json({ error: { code: 'FORBIDDEN', message: 'Platform access required' } }, 403);
+    const key = c.req.param('key');
+    if (!/^[a-z0-9][a-z0-9_-]{0,63}$/.test(key))
+      return c.json(
+        { error: { code: 'VALIDATION_ERROR', message: 'Invalid feature flag key' } },
+        422,
+      );
+    const body = await c.req.json<{ enabled?: boolean }>();
+    if (typeof body.enabled !== 'boolean')
+      return c.json(
+        { error: { code: 'VALIDATION_ERROR', message: 'enabled must be boolean' } },
+        422,
+      );
+    const now = new Date().toISOString();
+    const updated = await c.env.DB.prepare(
+      'UPDATE feature_flags SET enabled=?,updated_at=? WHERE key=?',
+    )
+      .bind(body.enabled ? 1 : 0, now, key)
+      .run();
+    if (!updated.meta.changes)
+      return c.json({ error: { code: 'NOT_FOUND', message: 'Not found' } }, 404);
+    await c.env.DB.prepare(
+      'INSERT INTO platform_audit_events(id,actor_user_id,action,entity_type,entity_id,summary_json,created_at) VALUES(?,?,?,?,?,?,?)',
+    )
+      .bind(
+        crypto.randomUUID(),
+        session.user.id,
+        'feature_flag.updated',
+        'feature_flag',
+        key,
+        JSON.stringify({ enabled: body.enabled }),
+        now,
+      )
+      .run();
+    return c.json({ data: { key, enabled: body.enabled } });
+  });
+  app.get('/api/v1/platform/users', async (c) => {
+    const session = requireSession(c);
+    if (!c.env.DB || !(await isPlatformAdmin(c.env.DB, session.user.id)))
+      return c.json({ error: { code: 'FORBIDDEN', message: 'Platform access required' } }, 403);
+    const rows = await c.env.DB.prepare(
+      `SELECT u.id,u.email,u.display_name,u.status,u.created_at,
+      (SELECT COUNT(*) FROM business_members bm WHERE bm.user_id=u.id AND bm.status='active') AS active_businesses,
+      EXISTS(SELECT 1 FROM platform_admins pa WHERE pa.user_id=u.id AND pa.status='active') AS is_platform_admin
+      FROM users u ORDER BY u.created_at DESC LIMIT 100`,
+    ).all();
+    return c.json({ data: rows.results });
   });
   app.get('/api/v1/platform/audit', async (c) => {
     const session = requireSession(c);

@@ -1147,6 +1147,42 @@ h1 {
     grid-template-columns: 1fr;
   }
 }
+.admin-page {
+  min-height: 100vh;
+  padding: var(--space-lg) clamp(1rem, 4vw, 4rem);
+  background: var(--color-paper);
+}
+.admin-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  max-width: 1400px;
+  margin: 0 auto var(--space-xl);
+  padding-bottom: var(--space-md);
+  border-bottom: 1px solid var(--color-rule);
+}
+.admin-page > .page-heading,
+.admin-page > .metric-grid,
+.admin-page > .dashboard-grid,
+.admin-page > .notice {
+  max-width: 1400px;
+  margin-left: auto;
+  margin-right: auto;
+}
+.admin-page .data-row button,
+.admin-page .data-row {
+  font: inherit;
+}
+.admin-page .data-row button {
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+.admin-page .data-row button:disabled {
+  opacity: 0.5;
+  cursor: wait;
+}
 
 @media (max-width: 700px) {
   .heading-actions {
