@@ -9,7 +9,15 @@ import {
 } from './lib/offline';
 import { StrictMode, useEffect, useMemo, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { BrowserRouter, Link, Route, Routes, useNavigate, useParams } from 'react-router-dom';
+import {
+  BrowserRouter,
+  Link,
+  Route,
+  Routes,
+  useLocation,
+  useNavigate,
+  useParams,
+} from 'react-router-dom';
 import './styles/global.css';
 if ('serviceWorker' in navigator) void navigator.serviceWorker.register('/sw.js');
 
@@ -74,6 +82,7 @@ async function api<T>(path: string, options: RequestInit = {}): Promise<T> {
 }
 
 function Layout({ children }: { children: React.ReactNode }) {
+  const location = useLocation();
   const [online, setOnline] = useState(navigator.onLine);
   const [pendingCount, setPendingCount] = useState(0);
   const [conflictCount, setConflictCount] = useState(0);
@@ -105,6 +114,7 @@ function Layout({ children }: { children: React.ReactNode }) {
     ['/app/inventory', 'Stok'],
     ['/app/purchases', 'Pembelian'],
     ['/app/expenses', 'Biaya'],
+    ['/app/import-export', 'Import / Export'],
     ['/app/customers', 'Pelanggan'],
     ['/app/refunds', 'Refund'],
   ];
@@ -2319,6 +2329,217 @@ function Expenses() {
     </Layout>
   );
 }
+function ImportExport() {
+  type Job = {
+    id: string;
+    status: string;
+    total_rows: number;
+    valid_rows: number;
+    error_rows: number;
+    rows?: Array<{ row_number: number; status: string; error_json: string | null }>;
+  };
+  const [businesses, setBusinesses] = useState<Business[]>([]);
+  const [importType, setImportType] = useState<'products' | 'customers' | 'suppliers'>('products');
+  const [filename, setFilename] = useState('kasuro-import.json');
+  const [rawRows, setRawRows] = useState(
+    '[{"name":"Contoh Produk","sku":"SKU-001","price_minor":10000,"cost_minor":5000}]',
+  );
+  const [job, setJob] = useState<Job | null>(null);
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
+  const businessId = businesses[0]?.id;
+  useEffect(() => {
+    void api<Business[]>('/api/v1/businesses')
+      .then(setBusinesses)
+      .catch((err: Error) => setError(err.message));
+  }, []);
+  const createImport = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!businessId) return;
+    setBusy(true);
+    setError('');
+    try {
+      const rows = JSON.parse(rawRows) as unknown;
+      if (!Array.isArray(rows)) throw new Error('Rows harus berupa array JSON.');
+      const created = await api<Job>(`/api/v1/businesses/${businessId}/imports`, {
+        method: 'POST',
+        headers: { 'X-CSRF-Token': getCsrf() },
+        body: JSON.stringify({ import_type: importType, filename, rows }),
+      });
+      setJob(created);
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  const validate = async () => {
+    if (!businessId || !job) return;
+    setBusy(true);
+    setError('');
+    try {
+      setJob(
+        await api<Job>(`/api/v1/businesses/${businessId}/imports/${job.id}/validate`, {
+          method: 'POST',
+          headers: { 'X-CSRF-Token': getCsrf() },
+        }),
+      );
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  const confirm = async () => {
+    if (!businessId || !job) return;
+    setBusy(true);
+    setError('');
+    try {
+      setJob(
+        await api<Job>(`/api/v1/businesses/${businessId}/imports/${job.id}/confirm`, {
+          method: 'POST',
+          headers: { 'X-CSRF-Token': getCsrf() },
+        }),
+      );
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  const exports = ['products', 'customers', 'suppliers', 'sales', 'inventory', 'expenses'];
+  return (
+    <Layout>
+      <section className="page-heading">
+        <div>
+          <span className="workspace-kicker">DATA PORTABILITY</span>
+          <h1>Masuk dan keluar dengan aman.</h1>
+          <p>
+            Preview, validasi, lalu konfirmasi. Export tetap dibatasi dan mengikuti ruang lingkup
+            bisnis aktif.
+          </p>
+        </div>
+        <span className="panel-label">CSV / JSON</span>
+      </section>
+      {error && <Notice message={error} />}
+      <div className="purchasing-grid">
+        <section className="panel">
+          <div className="panel-header">
+            <h2>Import data</h2>
+            <span className="panel-label">PREVIEW DULU</span>
+          </div>
+          <form className="compact-form" onSubmit={createImport}>
+            <label>
+              Jenis data
+              <select
+                value={importType}
+                onChange={(event) => setImportType(event.target.value as typeof importType)}
+              >
+                <option value="products">Produk</option>
+                <option value="customers">Pelanggan</option>
+                <option value="suppliers">Supplier</option>
+              </select>
+            </label>
+            <label>
+              Nama file
+              <input
+                required
+                maxLength={200}
+                value={filename}
+                onChange={(event) => setFilename(event.target.value)}
+              />
+            </label>
+            <label>
+              Rows JSON
+              <textarea
+                required
+                value={rawRows}
+                onChange={(event) => setRawRows(event.target.value)}
+                rows={8}
+              />
+            </label>
+            <button className="button" disabled={busy || !businessId} type="submit">
+              Buat preview
+            </button>
+          </form>
+          {job && (
+            <div className="metric">
+              <span>
+                Status: {job.status} · {job.total_rows} baris
+              </span>
+              <strong>
+                {job.valid_rows ?? 0} valid / {job.error_rows ?? 0} error
+              </strong>
+              <div className="form-grid">
+                <button
+                  className="button secondary"
+                  disabled={busy}
+                  onClick={() => void validate()}
+                  type="button"
+                >
+                  Validasi
+                </button>
+                <button
+                  className="button"
+                  disabled={busy || job.status !== 'validated' || Boolean(job.error_rows)}
+                  onClick={() => void confirm()}
+                  type="button"
+                >
+                  Konfirmasi import
+                </button>
+              </div>
+            </div>
+          )}
+        </section>
+        <section className="panel">
+          <div className="panel-header">
+            <h2>Export data</h2>
+            <span className="panel-label">MAKS 2.000 BARIS</span>
+          </div>
+          <div className="data-list">
+            {exports.map((resource) => (
+              <a
+                className="data-row"
+                key={resource}
+                href={
+                  businessId ? `${API}/api/v1/businesses/${businessId}/export/${resource}.csv` : '#'
+                }
+                download={`kasuro-${resource}.csv`}
+              >
+                <span>
+                  <strong>{resource}</strong>
+                  <small>CSV bounded dan tenant-scoped</small>
+                </span>
+                <b>Unduh ↗</b>
+              </a>
+            ))}
+          </div>
+        </section>
+      </div>
+      {job?.rows?.some((row) => row.status === 'invalid') && (
+        <section className="panel">
+          <div className="panel-header">
+            <h2>Baris yang perlu diperbaiki</h2>
+            <span className="panel-label">ERROR</span>
+          </div>
+          <div className="data-list">
+            {job.rows
+              .filter((row) => row.status === 'invalid')
+              .slice(0, 100)
+              .map((row) => (
+                <div className="data-row" key={row.row_number}>
+                  <span>
+                    <strong>Baris {row.row_number}</strong>
+                    <small>{row.error_json ?? 'Data tidak valid'}</small>
+                  </span>
+                </div>
+              ))}
+          </div>
+        </section>
+      )}
+    </Layout>
+  );
+}
 function Reports() {
   type Report = {
     summary: Record<string, number>;
@@ -3007,6 +3228,14 @@ createRoot(document.getElementById('root')!).render(
           element={
             <RequireAuth>
               <SaleDetail />
+            </RequireAuth>
+          }
+        />
+        <Route
+          path="/app/import-export"
+          element={
+            <RequireAuth>
+              <ImportExport />
             </RequireAuth>
           }
         />

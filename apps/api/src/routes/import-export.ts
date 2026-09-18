@@ -1,4 +1,5 @@
 import type { Hono } from 'hono';
+import { z } from 'zod';
 import type { Env } from '../index';
 import { createId, toCsv } from '@kasuro/domain';
 import { businessContext, requirePermission } from '../middleware/tenant';
@@ -41,6 +42,82 @@ export function registerImportExportRoutes(app: Hono<Env>): void {
     return c.body(csv);
   });
 
+  app.get('/api/v1/businesses/:businessId/export/:resource.csv', async (c) => {
+    const membership = requirePermission(c, 'reports.export');
+    if (!c.env.DB) return unavailable(c);
+    const db = c.env.DB;
+    const resource = c.req.param('resource') ?? '';
+    const exportDefinitions: Record<string, { headers: string[]; query: string }> = {
+      customers: {
+        headers: [
+          'customer_code',
+          'name',
+          'phone',
+          'email',
+          'total_spend_minor',
+          'transaction_count',
+        ],
+        query:
+          "SELECT customer_code,name,phone,email,total_spend_minor,transaction_count FROM customers WHERE business_id=? AND status='active' ORDER BY name LIMIT 2000",
+      },
+      suppliers: {
+        headers: ['supplier_code', 'name', 'phone', 'email'],
+        query:
+          "SELECT supplier_code,name,phone,email FROM suppliers WHERE business_id=? AND status='active' ORDER BY name LIMIT 2000",
+      },
+      sales: {
+        headers: [
+          'receipt_number',
+          'outlet_id',
+          'status',
+          'subtotal_minor',
+          'discount_minor',
+          'tax_minor',
+          'total_minor',
+          'cogs_minor',
+          'created_at',
+        ],
+        query:
+          "SELECT receipt_number,outlet_id,status,subtotal_minor,discount_minor,tax_minor,total_minor,cogs_minor,created_at FROM sales WHERE business_id=? AND status IN ('completed','partially_refunded','refunded') ORDER BY created_at DESC LIMIT 2000",
+      },
+      inventory: {
+        headers: [
+          'outlet_id',
+          'variant_id',
+          'quantity_on_hand',
+          'average_cost_minor',
+          'updated_at',
+        ],
+        query:
+          'SELECT outlet_id,variant_id,quantity_on_hand,average_cost_minor,updated_at FROM inventory_balances WHERE business_id=? ORDER BY outlet_id,variant_id LIMIT 2000',
+      },
+      expenses: {
+        headers: [
+          'outlet_id',
+          'amount_minor',
+          'category',
+          'description',
+          'expense_date',
+          'payment_method',
+        ],
+        query:
+          "SELECT outlet_id,amount_minor,category,description,expense_date,payment_method FROM expenses WHERE business_id=? AND status='active' ORDER BY expense_date DESC LIMIT 2000",
+      },
+    };
+    const definition = exportDefinitions[resource];
+    if (!definition) return notFound(c);
+    const result = await db
+      .prepare(definition.query)
+      .bind(membership.businessId)
+      .all<Record<string, unknown>>();
+    const csv = toCsv([
+      definition.headers,
+      ...result.results.map((row) => definition.headers.map((header) => String(row[header] ?? ''))),
+    ]);
+    c.header('Content-Type', 'text/csv; charset=utf-8');
+    c.header('Content-Disposition', `attachment; filename="kasuro-${resource}.csv"`);
+    return c.body(csv);
+  });
   app.post('/api/v1/businesses/:businessId/imports', async (c) => {
     const membership = requirePermission(c, 'products.create_update');
     if (!c.env.DB) return unavailable(c);
@@ -50,17 +127,24 @@ export function registerImportExportRoutes(app: Hono<Env>): void {
       filename?: string;
       rows?: unknown[];
     }>();
+    const supported = new Set(['products', 'customers', 'suppliers', 'opening_stock']);
+    const filename = body.filename?.trim();
     if (
       !body.import_type ||
-      !body.filename ||
+      !supported.has(body.import_type) ||
+      !filename ||
+      filename.length > 200 ||
+      /[\\/\0]/.test(filename) ||
       !Array.isArray(body.rows) ||
-      body.rows.length > 10000
+      body.rows.length === 0 ||
+      body.rows.length > 10000 ||
+      body.rows.some((row) => !row || typeof row !== 'object' || JSON.stringify(row).length > 8192)
     )
       return c.json(
         {
           error: {
             code: 'VALIDATION_ERROR',
-            message: 'Import type, filename and at most 10000 rows are required',
+            message: 'Import type, safe filename, and 1-10000 bounded rows are required',
           },
         },
         422,
@@ -77,7 +161,7 @@ export function registerImportExportRoutes(app: Hono<Env>): void {
           membership.businessId,
           membership.memberId,
           body.import_type,
-          body.filename.slice(0, 200),
+          filename,
           body.rows.length,
           now,
           now,
@@ -114,23 +198,33 @@ export function registerImportExportRoutes(app: Hono<Env>): void {
     let errors = 0;
     const statements = [];
     for (const row of rows.results) {
-      let value: Record<string, unknown> = {};
+      let parsed: unknown;
       try {
-        value = JSON.parse(row.raw_json) as Record<string, unknown>;
+        parsed = JSON.parse(row.raw_json) as unknown;
       } catch {
-        /* invalid JSON stays invalid */
+        parsed = null;
       }
+      const parsedRecord = z.record(z.string(), z.unknown()).safeParse(parsed);
+      const value = parsedRecord.success ? parsedRecord.data : {};
       const key = String(value.sku ?? value.customer_code ?? value.supplier_code ?? '')
         .trim()
         .toUpperCase();
-      const missing = job.import_type === 'products' ? !value.name || !key : !value.name;
+      const name = typeof value.name === 'string' ? value.name.trim() : '';
+      const missing = !name || !key;
+      const invalidNumber =
+        job.import_type === 'products' &&
+        ['price_minor', 'cost_minor', 'tax_rate_bp'].some(
+          (field) => value[field] !== undefined && integer(value[field]) === undefined,
+        );
       const duplicate = Boolean(key && seen.has(key));
       if (key) seen.add(key);
       const error = missing
         ? 'name and unique code are required'
-        : duplicate
-          ? 'duplicate code in import'
-          : null;
+        : invalidNumber
+          ? 'numeric product fields are invalid'
+          : duplicate
+            ? 'duplicate code in import'
+            : null;
       if (error) errors++;
       else valid++;
       statements.push(
@@ -150,6 +244,11 @@ export function registerImportExportRoutes(app: Hono<Env>): void {
       ).bind(valid, errors, new Date().toISOString(), job.id, membership.businessId),
     );
     await c.env.DB.batch(statements);
+    const details = await c.env.DB.prepare(
+      "SELECT row_number,status,error_json FROM import_rows WHERE import_job_id=? AND status='invalid' ORDER BY row_number LIMIT 100",
+    )
+      .bind(job.id)
+      .all<{ row_number: number; status: string; error_json: string | null }>();
     return c.json({
       data: {
         id: job.id,
@@ -157,6 +256,7 @@ export function registerImportExportRoutes(app: Hono<Env>): void {
         total_rows: rows.results.length,
         valid_rows: valid,
         error_rows: errors,
+        rows: details.results,
       },
     });
   });

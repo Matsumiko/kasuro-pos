@@ -20,6 +20,7 @@ test.describe('public and authenticated navigation', () => {
       '/app/sales',
       '/app/sales/example',
       '/app/refunds',
+      '/app/import-export',
     ]) {
       await page.goto(path);
       await expect(page).toHaveURL(/\/login$/);
