@@ -61,8 +61,8 @@ function withCors(
 }
 app.use('*', requestSafety);
 app.use('*', sessionMiddleware);
-app.use('*', csrfProtection);
 app.use('*', cors);
+app.use('*', csrfProtection);
 
 app.get('/health', (c) =>
   c.json({
@@ -96,9 +96,7 @@ app.notFound((c) => c.json({ error: { code: 'NOT_FOUND', message: 'Not found' } 
 
 app.onError((error, c) => {
   if (error instanceof HTTPException) return withCors(c, error.getResponse());
-  console.error(
-    JSON.stringify({ event: 'request_error', name: error.name, message: error.message }),
-  );
+  console.error(JSON.stringify({ event: 'request_error', name: error.name }));
   return withCors(
     c,
     c.json({ error: { code: 'INTERNAL_ERROR', message: 'Internal server error' } }, 500),

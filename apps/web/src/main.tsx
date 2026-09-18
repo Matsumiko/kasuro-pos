@@ -190,6 +190,23 @@ function RequireAuth({ children }: { children: React.ReactNode }) {
   return <>{children}</>;
 }
 
+function RequireAdmin({ children }: { children: React.ReactNode }) {
+  const navigate = useNavigate();
+  const [state, setState] = useState<'checking' | 'authenticated'>('checking');
+  useEffect(() => {
+    void api('/api/v1/auth/me')
+      .then(() => setState('authenticated'))
+      .catch(() => navigate('/admin/login', { replace: true }));
+  }, [navigate]);
+  if (state !== 'authenticated')
+    return (
+      <main className="not-found">
+        <p>Memeriksa akses platform…</p>
+      </main>
+    );
+  return <>{children}</>;
+}
+
 function Setup() {
   const navigate = useNavigate();
   const [businessName, setBusinessName] = useState('');
@@ -3419,9 +3436,9 @@ createRoot(document.getElementById('root')!).render(
         <Route
           path="/admin"
           element={
-            <RequireAuth>
+            <RequireAdmin>
               <Admin />
-            </RequireAuth>
+            </RequireAdmin>
           }
         />
         <Route path="/" element={<PublicHome />} />

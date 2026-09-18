@@ -25,11 +25,12 @@ test.describe('public and authenticated navigation', () => {
       '/app/sales',
       '/app/sales/example',
       '/app/import-export',
-      '/admin',
     ]) {
       await page.goto(path);
       await expect(page).toHaveURL(/\/login$/);
     }
+    await page.goto('/admin');
+    await expect(page).toHaveURL(/\/admin\/login$/);
   });
 
   test('operational shell has no mobile horizontal overflow', async ({ page }) => {

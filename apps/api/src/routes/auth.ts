@@ -10,6 +10,9 @@ import { requireSession } from '../middleware/session';
 const SESSION_DAYS = 30;
 const ABSOLUTE_SESSION_DAYS = 90;
 
+const LOGIN_LIMIT = 10;
+const LOGIN_WINDOW_MS = 15 * 60 * 1000;
+
 export function registerAuthRoutes(app: Hono<Env>): void {
   app.post('/api/v1/auth/register', async (c) => {
     const input = parseBody(registerSchema, await c.req.json());
@@ -71,6 +74,9 @@ export function registerAuthRoutes(app: Hono<Env>): void {
         { error: { code: 'INVALID_CREDENTIALS', message: 'Email or password is incorrect' } },
         401,
       );
+    const rateKey = await sha256(`${input.email}|${c.req.header('CF-Connecting-IP') ?? 'unknown'}`);
+    if (await loginRateLimited(c.env.DB, rateKey))
+      return c.json({ error: { code: 'TOO_MANY_ATTEMPTS', message: 'Try again later' } }, 429);
     const row = await c.env.DB.prepare(
       `SELECT id,email,password_hash,display_name FROM users WHERE email = ? AND status = 'active'`,
     )
@@ -81,6 +87,7 @@ export function registerAuthRoutes(app: Hono<Env>): void {
         { error: { code: 'INVALID_CREDENTIALS', message: 'Email or password is incorrect' } },
         401,
       );
+    await clearLoginRateLimit(c.env.DB, rateKey);
     const now = new Date().toISOString();
     await c.env.DB.prepare('UPDATE users SET last_login_at = ?, updated_at = ? WHERE id = ?')
       .bind(now, now, row.id)
@@ -188,4 +195,28 @@ function setSessionCookies(
 function parseBody<T extends z.ZodType>(schema: T, body: unknown): z.infer<T> | undefined {
   const result = schema.safeParse(body);
   return result.success ? result.data : undefined;
+}
+
+async function loginRateLimited(db: D1Database, keyHash: string): Promise<boolean> {
+  const now = Date.now();
+  const row = await db
+    .prepare('SELECT window_started_at,attempts FROM auth_rate_limits WHERE key_hash=?')
+    .bind(keyHash)
+    .first<{ window_started_at: string; attempts: number }>();
+  const started = row ? Date.parse(row.window_started_at) : now;
+  const activeWindow = row && now - started < LOGIN_WINDOW_MS;
+  const attempts = activeWindow ? row.attempts : 0;
+  const next = attempts + 1;
+  const timestamp = new Date(activeWindow ? started : now).toISOString();
+  await db
+    .prepare(
+      'INSERT INTO auth_rate_limits(key_hash,window_started_at,attempts,updated_at) VALUES(?,?,?,?) ON CONFLICT(key_hash) DO UPDATE SET window_started_at=excluded.window_started_at,attempts=excluded.attempts,updated_at=excluded.updated_at',
+    )
+    .bind(keyHash, timestamp, next, new Date(now).toISOString())
+    .run();
+  return next > LOGIN_LIMIT;
+}
+
+async function clearLoginRateLimit(db: D1Database, keyHash: string): Promise<void> {
+  await db.prepare('DELETE FROM auth_rate_limits WHERE key_hash=?').bind(keyHash).run();
 }
