@@ -1686,3 +1686,14 @@ p {
     transition-duration: 0.01ms !important;
   }
 }
+.dark-panel {
+  background: var(--color-ink);
+  color: var(--color-paper);
+}
+.dark-panel .panel-label,
+.dark-panel p {
+  color: color-mix(in oklab, var(--color-paper) 78%, transparent);
+}
+.dark-panel h2 {
+  color: var(--color-paper);
+}
