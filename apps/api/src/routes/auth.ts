@@ -179,14 +179,14 @@ function setSessionCookies(
   setCookie(c, sessionCookieName, token, {
     httpOnly: true,
     secure,
-    sameSite: 'Lax',
+    sameSite: secure ? 'None' : 'Lax',
     path: '/',
     maxAge: SESSION_DAYS * 86_400,
   });
   setCookie(c, 'kasuro_csrf', csrfToken, {
     httpOnly: false,
     secure,
-    sameSite: 'Lax',
+    sameSite: secure ? 'None' : 'Lax',
     path: '/',
     maxAge: SESSION_DAYS * 86_400,
   });
