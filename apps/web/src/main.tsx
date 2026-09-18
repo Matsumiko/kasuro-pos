@@ -3588,15 +3588,7 @@ createRoot(document.getElementById('root')!).render(
             </RequireAuth>
           }
         />
-        <Route
-          path="/features"
-          element={
-            <PublicInfo
-              title="Semua yang penting, terlihat jelas."
-              body="Penjualan, stok, tim, dan keputusan operasional dalam satu ruang kerja."
-            />
-          }
-        />
+        <Route path="/features" element={<FeaturesPage />} />
         <Route
           path="/pricing"
           element={
@@ -3611,6 +3603,129 @@ createRoot(document.getElementById('root')!).render(
     </BrowserRouter>
   </StrictMode>,
 );
+
+function FeaturesPage() {
+  const features = [
+    {
+      index: '01',
+      eyebrow: 'KASIR',
+      title: 'Transaksi yang mengikuti ritme toko.',
+      body: 'Pencarian produk yang cepat, shift yang jelas, pesanan yang bisa ditahan, dan pembayaran yang selesai dalam satu alur.',
+      points: ['Buka dan tutup shift', 'Hold dan resume pesanan', 'Pembayaran tunai dan split'],
+    },
+    {
+      index: '02',
+      eyebrow: 'STOK',
+      title: 'Saldo yang punya cerita.',
+      body: 'Kasuro menghubungkan stok dengan pergerakannya. Penerimaan, penjualan, penyesuaian, dan modal rata-rata tetap bisa ditelusuri.',
+      points: ['Saldo per outlet', 'Movement immutable', 'Weighted-average costing'],
+    },
+    {
+      index: '03',
+      eyebrow: 'RUANG KERJA',
+      title: 'Satu bisnis. Akses yang tepat.',
+      body: 'Kelola outlet, tim, dan izin dalam konteks yang sama. Owner, manager, cashier, dan inventory staff melihat pekerjaan yang memang menjadi tanggung jawabnya.',
+      points: ['Role berbasis izin', 'Akses per outlet', 'Audit aktivitas penting'],
+    },
+  ];
+
+  return (
+    <div className="app-shell features-page">
+      <header className="topbar landing-topbar">
+        <Link className="brand" to="/">
+          KASU<span>RO</span>
+        </Link>
+        <nav aria-label="Navigasi fitur">
+          <Link to="/">Beranda</Link>
+          <Link to="/pricing">Harga</Link>
+          <Link to="/login">Masuk</Link>
+        </nav>
+      </header>
+      <main>
+        <section className="features-hero">
+          <div>
+            <span className="eyebrow">Di dalam Kasuro</span>
+            <h1>Semua yang perlu bergerak, ada di satu alur.</h1>
+            <p>
+              Bukan kumpulan menu yang berdiri sendiri. Kasuro dibuat supaya transaksi, stok, dan
+              tim saling menjelaskan.
+            </p>
+          </div>
+          <div className="features-hero-index">
+            03
+            <br />
+            <span>ALUR UTAMA</span>
+          </div>
+        </section>
+
+        <section className="features-overview">
+          <span className="landing-section-mark">KASURO / CARA KERJA</span>
+          <p>
+            Mulai dari momen paling sibuk di toko. Lalu lihat bagaimana setiap keputusan
+            meninggalkan konteks yang berguna.
+          </p>
+        </section>
+
+        <section className="features-list">
+          {features.map((feature) => (
+            <article className="feature-detail" key={feature.index}>
+              <div className="feature-detail-meta">
+                <span>{feature.index}</span>
+                <span>{feature.eyebrow}</span>
+              </div>
+              <div className="feature-detail-copy">
+                <h2>{feature.title}</h2>
+                <p>{feature.body}</p>
+              </div>
+              <ul>
+                {feature.points.map((point) => (
+                  <li key={point}>{point}</li>
+                ))}
+              </ul>
+            </article>
+          ))}
+        </section>
+
+        <section className="features-flow">
+          <div>
+            <span className="eyebrow">Bukan hanya di depan</span>
+            <h2>Dari transaksi pertama sampai keputusan berikutnya.</h2>
+          </div>
+          <div className="features-flow-steps">
+            <div>
+              <b>01</b>
+              <span>Jual</span>
+              <small>Kasir tetap fokus pada pelanggan.</small>
+            </div>
+            <div>
+              <b>02</b>
+              <span>Catat</span>
+              <small>Stok dan pembayaran ikut tercatat.</small>
+            </div>
+            <div>
+              <b>03</b>
+              <span>Pahami</span>
+              <small>Laporan memberi konteks untuk langkah berikutnya.</small>
+            </div>
+          </div>
+        </section>
+
+        <section className="features-cta">
+          <span className="eyebrow">Mulai dengan fondasi yang benar</span>
+          <h2>Kasuro siap mengikuti cara bisnismu bekerja.</h2>
+          <Link className="button" to="/register">
+            Buat ruang kerja pertama <span>↗</span>
+          </Link>
+        </section>
+      </main>
+      <footer className="footer landing-footer">
+        <span>KASURO POS</span>
+        <span>Jelas di kasir. Terkendali di belakang.</span>
+        <span>© 2026</span>
+      </footer>
+    </div>
+  );
+}
 
 function PublicHome() {
   const capabilities = [
