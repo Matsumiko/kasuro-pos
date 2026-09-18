@@ -21,7 +21,9 @@ import {
 import './styles/global.css';
 if ('serviceWorker' in navigator) void navigator.serviceWorker.register('/sw.js');
 
-const API = import.meta.env.VITE_API_ORIGIN ?? 'http://localhost:8787';
+const API =
+  import.meta.env.VITE_API_ORIGIN ??
+  (import.meta.env.PROD ? 'https://kasuro-api.fadztech12.workers.dev' : 'http://localhost:8787');
 
 type Product = {
   variant_id: string;

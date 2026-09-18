@@ -9,8 +9,8 @@
     "packages/*"
   ],
   "scripts": {
-    "dev:web": "vite --host 0.0.0.0",
     "build": "npm run build -w @kasuro/web",
+    "verify:web-build": "node scripts/verify-web-build.mjs",
     "typecheck": "tsc -b",
     "dev:api": "wrangler dev --config wrangler.toml --local --port=8787",
     "lint": "eslint .",
