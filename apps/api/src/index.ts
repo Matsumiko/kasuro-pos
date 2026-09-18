@@ -4,6 +4,7 @@ import { HTTPException } from 'hono/http-exception';
 import type { SessionContext } from './middleware/session';
 import type { MembershipContext } from './middleware/tenant';
 import { requestSafety } from './middleware/request';
+import { isAllowedWebOrigin } from './middleware/origin';
 import { sessionMiddleware } from './middleware/session';
 import { csrfProtection } from './middleware/csrf';
 import { registerAuthRoutes } from './routes/auth';
@@ -50,7 +51,8 @@ function withCors(
   response: Response,
 ): Response {
   const origin = c.req.header('Origin');
-  if (!origin || origin !== (c.env.WEB_ORIGIN ?? 'http://localhost:5173')) return response;
+  if (!origin || !isAllowedWebOrigin(origin, c.env.WEB_ORIGIN ?? 'http://localhost:5173'))
+    return response;
   const result = new Response(response.body, response);
   result.headers.set('Access-Control-Allow-Origin', origin);
   result.headers.set('Access-Control-Allow-Credentials', 'true');
@@ -59,6 +61,7 @@ function withCors(
   result.headers.set('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
   return result;
 }
+
 app.use('*', requestSafety);
 app.use('*', sessionMiddleware);
 app.use('*', cors);

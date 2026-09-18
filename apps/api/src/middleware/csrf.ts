@@ -1,7 +1,7 @@
 import type { MiddlewareHandler } from 'hono';
 import type { Env } from '../index';
 import { sha256 } from '../modules/crypto';
-
+import { isAllowedWebOrigin } from './origin';
 const MUTATING_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
 
 export const csrfProtection: MiddlewareHandler<Env> = async (c, next) => {
@@ -9,7 +9,7 @@ export const csrfProtection: MiddlewareHandler<Env> = async (c, next) => {
   const session = c.get('session');
   if (!session) return next();
   const origin = c.req.header('Origin');
-  if (origin && origin !== c.env.WEB_ORIGIN)
+  if (origin && !isAllowedWebOrigin(origin, c.env.WEB_ORIGIN ?? 'http://localhost:5173'))
     return c.json(
       { error: { code: 'CSRF_ORIGIN_REJECTED', message: 'Request origin is not allowed' } },
       403,
