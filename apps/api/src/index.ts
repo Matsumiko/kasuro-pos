@@ -43,7 +43,7 @@ const app = new Hono<Env>();
 const cors: MiddlewareHandler<Env> = async (c, next) => {
   if (c.req.method === 'OPTIONS') return withCors(c, c.body(null, 204));
   await next();
-  return withCors(c, c.res);
+  c.res = withCors(c, c.res);
 };
 
 function withCors(
