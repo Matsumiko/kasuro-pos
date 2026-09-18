@@ -82,6 +82,12 @@ async function api<T>(path: string, options: RequestInit = {}): Promise<T> {
   if (!response.ok) throw new Error(body.error?.message ?? 'Permintaan gagal');
   return body.data as T;
 }
+let csrfToken = '';
+
+async function bootstrapCsrf(): Promise<void> {
+  const result = await api<{ token: string }>('/api/v1/auth/csrf');
+  csrfToken = result.token;
+}
 
 function Layout({ children }: { children: React.ReactNode }) {
   const location = useLocation();
@@ -180,6 +186,7 @@ function RequireAuth({ children }: { children: React.ReactNode }) {
   const [state, setState] = useState<'checking' | 'authenticated'>('checking');
   useEffect(() => {
     void api('/api/v1/auth/me')
+      .then(() => bootstrapCsrf())
       .then(() => setState('authenticated'))
       .catch(() => navigate('/login', { replace: true }));
   }, [navigate]);
@@ -197,6 +204,7 @@ function RequireAdmin({ children }: { children: React.ReactNode }) {
   const [state, setState] = useState<'checking' | 'authenticated'>('checking');
   useEffect(() => {
     void api('/api/v1/auth/me')
+      .then(() => bootstrapCsrf())
       .then(() => setState('authenticated'))
       .catch(() => navigate('/admin/login', { replace: true }));
   }, [navigate]);
@@ -3434,12 +3442,7 @@ function money(value: number | undefined): string {
       }).format(value);
 }
 function getCsrf(): string {
-  return (
-    document.cookie
-      .split('; ')
-      .find((item) => item.startsWith('kasuro_csrf='))
-      ?.split('=')[1] ?? ''
-  );
+  return csrfToken;
 }
 
 createRoot(document.getElementById('root')!).render(

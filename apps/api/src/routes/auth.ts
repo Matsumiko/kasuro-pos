@@ -121,17 +121,20 @@ export function registerAuthRoutes(app: Hono<Env>): void {
     return c.json({ data: { logged_out: true } });
   });
 
-  app.get('/api/v1/auth/me', (c) => {
+  app.get('/api/v1/auth/csrf', async (c) => {
     const session = requireSession(c);
-    return c.json({
-      data: {
-        user: {
-          id: session.user.id,
-          email: session.user.email,
-          display_name: session.user.displayName,
-        },
-      },
-    });
+    if (!c.env.DB)
+      return c.json(
+        { error: { code: 'CONFIGURATION_ERROR', message: 'Database unavailable' } },
+        503,
+      );
+    const token = createSecret(32);
+    await c.env.DB.prepare(
+      'UPDATE sessions SET csrf_token_hash=?,last_seen_at=? WHERE id=? AND revoked_at IS NULL',
+    )
+      .bind(await sha256(token), new Date().toISOString(), session.sessionId)
+      .run();
+    return c.json({ data: { token } });
   });
 }
 
