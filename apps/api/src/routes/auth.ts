@@ -14,6 +14,11 @@ const LOGIN_LIMIT = 10;
 const LOGIN_WINDOW_MS = 15 * 60 * 1000;
 
 export function registerAuthRoutes(app: Hono<Env>): void {
+  app.get('/api/v1/auth/me', (c) => {
+    const session = requireSession(c);
+    return c.json({ data: { user: session.user } });
+  });
+
   app.post('/api/v1/auth/register', async (c) => {
     const input = parseBody(registerSchema, await c.req.json());
     if (!input)
