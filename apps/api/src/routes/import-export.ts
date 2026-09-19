@@ -2,7 +2,7 @@ import type { Hono } from 'hono';
 import { z } from 'zod';
 import type { Env } from '../index';
 import { createId, toCsv } from '@kasuro/domain';
-import { businessContext, requirePermission } from '../middleware/tenant';
+import { businessContext, requirePermission, type MembershipContext } from '../middleware/tenant';
 
 export function registerImportExportRoutes(app: Hono<Env>): void {
   app.use('/api/v1/businesses/:businessId/export', businessContext);
@@ -372,6 +372,7 @@ export function registerImportExportRoutes(app: Hono<Env>): void {
             },
             409,
           );
+        if (!(await canAccessOutlet(c.env.DB, membership, outletId))) return notFound(c);
         const sourceId = `import:${job.id}:${row.row_number}`;
         const existing = await c.env.DB.prepare(
           'SELECT id FROM stock_movements WHERE business_id=? AND source_type=? AND source_id=? AND variant_id=? AND movement_type=?',
@@ -589,6 +590,25 @@ async function resolveOutletId(
     .bind(businessId, key, key.toUpperCase())
     .first<{ id: string }>();
   return result?.id ?? null;
+}
+async function canAccessOutlet(
+  db: D1Database,
+  membership: MembershipContext,
+  outletId: string,
+): Promise<boolean> {
+  const row = membership.allOutlets
+    ? await db
+        .prepare("SELECT id FROM outlets WHERE business_id=? AND id=? AND status='active'")
+        .bind(membership.businessId, outletId)
+        .first()
+    : await db
+        .prepare(
+          `SELECT o.id FROM outlets o JOIN member_outlets mo ON mo.outlet_id=o.id
+           WHERE o.business_id=? AND o.id=? AND mo.member_id=? AND o.status='active'`,
+        )
+        .bind(membership.businessId, outletId, membership.memberId)
+        .first();
+  return Boolean(row);
 }
 
 async function runBatches(db: D1Database, statements: D1PreparedStatement[]): Promise<void> {

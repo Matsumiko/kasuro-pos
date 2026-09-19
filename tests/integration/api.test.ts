@@ -552,6 +552,67 @@ describe('API integration over isolated local D1', () => {
     expect(detail.body.data.rows).toHaveLength(1);
     expect(detail.body.data.rows[0].status).toBe('valid');
 
+    const restricted = await register(proxy.env, 'import-restricted@example.test');
+    const restrictedMemberId = 'import-restricted-member';
+    await proxy.env.DB.batch([
+      proxy.env.DB.prepare(
+        "INSERT INTO business_members(id,business_id,user_id,status,all_outlets,joined_at,created_at,updated_at) VALUES(?,?,?,'active',0,datetime('now'),datetime('now'),datetime('now'))",
+      ).bind(restrictedMemberId, businessId, restricted.userId),
+      proxy.env.DB.prepare('INSERT INTO member_roles(member_id,role_id) VALUES(?,?)').bind(
+        restrictedMemberId,
+        'role-inventory',
+      ),
+      proxy.env.DB.prepare('INSERT INTO member_outlets(member_id,outlet_id) VALUES(?,?)').bind(
+        restrictedMemberId,
+        outlet.body.data.id,
+      ),
+    ]);
+    const restrictedOutlet = await createOutlet(
+      proxy.env,
+      owner,
+      businessId,
+      'RESTRICTED-TARGET',
+      'Restricted Target',
+    );
+    expect(restrictedOutlet.status).toBe(201);
+    const unauthorizedOpening = await request(
+      proxy.env,
+      `/api/v1/businesses/${businessId}/imports`,
+      {
+        method: 'POST',
+        auth: owner,
+        body: {
+          import_type: 'opening_stock',
+          filename: 'restricted-target.json',
+          rows: [
+            {
+              sku: 'IMPORT-001',
+              outlet_code: 'RESTRICTED-TARGET',
+              quantity: 3,
+              unit_cost_minor: 12000,
+            },
+          ],
+        },
+      },
+    );
+    const unauthorizedValidation = await request(
+      proxy.env,
+      `/api/v1/businesses/${businessId}/imports/${unauthorizedOpening.body.data.id}/validate`,
+      { method: 'POST', auth: owner },
+    );
+    expect(unauthorizedValidation.status).toBe(200);
+    const restrictedConfirmation = await request(
+      proxy.env,
+      `/api/v1/businesses/${businessId}/imports/${unauthorizedOpening.body.data.id}/confirm`,
+      { method: 'POST', auth: restricted },
+    );
+    expect(restrictedConfirmation.status).toBe(404);
+    const restrictedTargetMovement = await proxy.env.DB.prepare(
+      "SELECT COUNT(*) AS count FROM stock_movements WHERE business_id=? AND source_type='opening_stock_import' AND outlet_id=?",
+    )
+      .bind(businessId, restrictedOutlet.body.data.id)
+      .first<{ count: number }>();
+    expect(restrictedTargetMovement?.count).toBe(0);
     const otherOwner = await register(proxy.env, 'import-other@example.test');
     const otherBusiness = await request(proxy.env, '/api/v1/businesses', {
       method: 'POST',
