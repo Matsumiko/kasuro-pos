@@ -56,10 +56,12 @@ export function registerRefundRoutes(app: Hono<Env>): void {
       return notFound(c);
     const lines = await c.env.DB.prepare(
       `SELECT rl.id,rl.sale_line_id,rl.quantity,rl.amount_minor,sl.product_name,sl.sku
-       FROM refund_lines rl JOIN sale_lines sl ON sl.id=rl.sale_line_id
+       FROM refund_lines rl
+       JOIN refunds r ON r.id=rl.refund_id AND r.business_id=?
+       JOIN sale_lines sl ON sl.id=rl.sale_line_id AND sl.sale_id=r.sale_id
        WHERE rl.refund_id=? ORDER BY rl.id`,
     )
-      .bind(c.req.param('refundId'))
+      .bind(membership.businessId, c.req.param('refundId'))
       .all();
     return c.json({ data: { ...refund, lines: lines.results } });
   });
@@ -82,16 +84,24 @@ export function registerRefundRoutes(app: Hono<Env>): void {
     }>();
     const payloadHash = await sha256(JSON.stringify(body));
     const existing = await db
-      .prepare('SELECT request_hash,response_json FROM idempotency_keys WHERE business_id=? AND endpoint_key=?')
+      .prepare(
+        'SELECT request_hash,response_json FROM idempotency_keys WHERE business_id=? AND endpoint_key=?',
+      )
       .bind(membership.businessId, `refund:${idempotencyKey}`)
       .first<{ request_hash: string; response_json: string | null }>();
     if (existing) {
       if (existing.request_hash !== payloadHash)
         return c.json(
-          { error: { code: 'IDEMPOTENCY_KEY_REUSED', message: 'Idempotency key was used for a different payload' } },
+          {
+            error: {
+              code: 'IDEMPOTENCY_KEY_REUSED',
+              message: 'Idempotency key was used for a different payload',
+            },
+          },
           409,
         );
-      if (existing.response_json) return c.json({ ...JSON.parse(existing.response_json), idempotent: true });
+      if (existing.response_json)
+        return c.json({ ...JSON.parse(existing.response_json), idempotent: true });
       return c.json({ data: { status: 'pending' }, idempotent: true }, 202);
     }
     if (
@@ -179,9 +189,8 @@ export function registerRefundRoutes(app: Hono<Env>): void {
       .bind(body.sale_id)
       .first<{ remaining: number }>();
     const requestedQuantity = quantities.reduce((sum, row) => sum + row.quantity!, 0);
-    const nextStatus = (remainingRow?.remaining ?? 0) - requestedQuantity === 0
-      ? 'refunded'
-      : 'partially_refunded';
+    const nextStatus =
+      (remainingRow?.remaining ?? 0) - requestedQuantity === 0 ? 'refunded' : 'partially_refunded';
     const statements = [
       db
         .prepare(

@@ -543,7 +543,28 @@ describe('API integration over isolated local D1', () => {
       { method: 'POST', auth: owner },
     );
     expect(validation.status).toBe(200);
-    expect(validation.body.data.valid_rows).toBe(1);
+    const detail = await request(
+      proxy.env,
+      `/api/v1/businesses/${businessId}/imports/${opening.body.data.id}`,
+      { auth: owner },
+    );
+    expect(detail.status).toBe(200);
+    expect(detail.body.data.rows).toHaveLength(1);
+    expect(detail.body.data.rows[0].status).toBe('valid');
+
+    const otherOwner = await register(proxy.env, 'import-other@example.test');
+    const otherBusiness = await request(proxy.env, '/api/v1/businesses', {
+      method: 'POST',
+      auth: otherOwner,
+      body: { name: 'Other Import Demo', slug: 'other-import-demo', timezone: 'Asia/Jakarta' },
+    });
+    const crossTenantDetail = await request(
+      proxy.env,
+      `/api/v1/businesses/${otherBusiness.body.data.id}/imports/${opening.body.data.id}`,
+      { auth: otherOwner },
+    );
+    expect(crossTenantDetail.status).toBe(404);
+
     const confirmed = await request(
       proxy.env,
       `/api/v1/businesses/${businessId}/imports/${opening.body.data.id}/confirm`,

@@ -531,9 +531,9 @@ export function registerImportExportRoutes(app: Hono<Env>): void {
       .first();
     if (!job) return notFound(c);
     const rows = await c.env.DB.prepare(
-      'SELECT row_number,status,error_json FROM import_rows WHERE import_job_id=? ORDER BY row_number LIMIT 10000',
+      'SELECT r.row_number,r.status,r.error_json FROM import_rows r JOIN import_jobs j ON j.id=r.import_job_id AND j.business_id=? WHERE r.import_job_id=? ORDER BY r.row_number LIMIT 10000',
     )
-      .bind(c.req.param('importId'))
+      .bind(membership.businessId, c.req.param('importId'))
       .all();
     return c.json({ data: { ...job, rows: rows.results } });
   });

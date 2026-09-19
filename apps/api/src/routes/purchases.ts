@@ -87,10 +87,13 @@ export function registerPurchaseRoutes(app: Hono<Env>): void {
       return notFound(c);
     const lines = await c.env.DB.prepare(
       `SELECT pol.id,pol.variant_id,pol.quantity_ordered,pol.quantity_received,pol.unit_cost_minor,v.sku,p.name AS product_name,v.label
-       FROM purchase_order_lines pol JOIN product_variants v ON v.id=pol.variant_id JOIN products p ON p.id=v.product_id
+       FROM purchase_order_lines pol
+       JOIN purchase_orders po ON po.id=pol.purchase_order_id AND po.business_id=?
+       JOIN product_variants v ON v.id=pol.variant_id AND v.business_id=po.business_id
+       JOIN products p ON p.id=v.product_id AND p.business_id=po.business_id
        WHERE pol.purchase_order_id=? ORDER BY pol.id`,
     )
-      .bind(c.req.param('purchaseId'))
+      .bind(membership.businessId, c.req.param('purchaseId'))
       .all();
     return c.json({ data: { ...purchase, lines: lines.results } });
   });
