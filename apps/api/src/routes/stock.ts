@@ -426,7 +426,17 @@ export function registerStockRoutes(app: Hono<Env>): void {
       const unitCost = line.unit_cost_minor;
       statements.push(
         c.env.DB.prepare(
-          'UPDATE inventory_balances SET quantity_on_hand=quantity_on_hand+?,average_cost_minor=CASE WHEN quantity_on_hand > 0 THEN CAST((quantity_on_hand * average_cost_minor + ? * ? + (quantity_on_hand + ?)/2) / (quantity_on_hand + ?) AS INTEGER) ELSE ? END,updated_at=? WHERE business_id=? AND outlet_id=? AND variant_id=?',
+          'UPDATE stock_transfer_lines SET quantity_received=quantity_requested WHERE transfer_id=? AND variant_id=? AND quantity_received<? AND EXISTS (SELECT 1 FROM inventory_balances WHERE business_id=? AND outlet_id=? AND variant_id=?)',
+        ).bind(
+          transferId,
+          line.variant_id,
+          line.quantity_requested,
+          membership.businessId,
+          transfer.destination_outlet_id,
+          line.variant_id,
+        ),
+        c.env.DB.prepare(
+          'UPDATE inventory_balances SET quantity_on_hand=quantity_on_hand+?,average_cost_minor=CASE WHEN quantity_on_hand > 0 THEN CAST((quantity_on_hand * average_cost_minor + ? * ? + (quantity_on_hand + ?)/2) / (quantity_on_hand + ?) AS INTEGER) ELSE ? END,updated_at=? WHERE business_id=? AND outlet_id=? AND variant_id=? AND changes()>0',
         ).bind(
           quantity,
           quantity,
@@ -440,10 +450,7 @@ export function registerStockRoutes(app: Hono<Env>): void {
           line.variant_id,
         ),
         c.env.DB.prepare(
-          'UPDATE stock_transfer_lines SET quantity_received=quantity_requested WHERE transfer_id=? AND variant_id=? AND quantity_received<?',
-        ).bind(transferId, line.variant_id, line.quantity_requested),
-        c.env.DB.prepare(
-          'INSERT INTO stock_movements(id,business_id,outlet_id,variant_id,movement_type,quantity_delta,unit_cost_minor,source_type,source_id,actor_member_id,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)',
+          'INSERT INTO stock_movements(id,business_id,outlet_id,variant_id,movement_type,quantity_delta,unit_cost_minor,source_type,source_id,actor_member_id,created_at) SELECT ?,?,?,?,?,?,?,?,?,?,? WHERE changes()>0',
         ).bind(
           createId(),
           membership.businessId,
@@ -461,11 +468,22 @@ export function registerStockRoutes(app: Hono<Env>): void {
     }
     statements.push(
       c.env.DB.prepare(
-        "UPDATE stock_transfers SET status='received',updated_at=? WHERE id=? AND business_id=? AND status IN ('sent','partially_received')",
-      ).bind(now, transferId, membership.businessId),
+        "UPDATE stock_transfers SET status='received',updated_at=? WHERE id=? AND business_id=? AND status IN ('sent','partially_received') AND NOT EXISTS (SELECT 1 FROM stock_transfer_lines WHERE transfer_id=? AND quantity_received<quantity_requested)",
+      ).bind(now, transferId, membership.businessId, transferId),
     );
     await c.env.DB.batch(statements);
-    return c.json({ data: { id: transferId, status: 'received', idempotent: false } });
+    const updated = await c.env.DB.prepare(
+      'SELECT status FROM stock_transfers WHERE id=? AND business_id=?',
+    )
+      .bind(transferId, membership.businessId)
+      .first<{ status: string }>();
+    return c.json({
+      data: {
+        id: transferId,
+        status: updated?.status ?? 'sent',
+        idempotent: false,
+      },
+    });
   });
 }
 

@@ -341,6 +341,28 @@ describe('API integration over isolated local D1', () => {
       .bind(businessId, transfer.body.data.id)
       .first<{ count: number }>();
     expect(transferMovements?.count).toBe(1);
+    const concurrentReceives = await Promise.all(
+      [1, 2].map(() =>
+        request(
+          proxy.env,
+          `/api/v1/businesses/${businessId}/stock-transfers/${transfer.body.data.id}/receive`,
+          { method: 'POST', auth: owner },
+        ),
+      ),
+    );
+    expect(concurrentReceives.every((response) => response.status === 200)).toBe(true);
+    const receiveBalance = await proxy.env.DB.prepare(
+      'SELECT quantity_on_hand FROM inventory_balances WHERE business_id=? AND outlet_id=? AND variant_id=?',
+    )
+      .bind(businessId, malang.body.data.id, product.body.data.variant_id)
+      .first<{ quantity_on_hand: number }>();
+    expect(receiveBalance?.quantity_on_hand).toBe(2);
+    const receiveMovements = await proxy.env.DB.prepare(
+      "SELECT COUNT(*) AS count FROM stock_movements WHERE business_id=? AND source_type='stock_transfer' AND source_id=? AND movement_type='transfer_in'",
+    )
+      .bind(businessId, transfer.body.data.id)
+      .first<{ count: number }>();
+    expect(receiveMovements?.count).toBe(1);
 
     const purchaseListBeforeRestriction = await request(
       proxy.env,
