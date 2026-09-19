@@ -486,6 +486,80 @@ describe('API integration over isolated local D1', () => {
     });
     expect(sale.status).toBe(201);
     expect(sale.body.data.total_minor).toBe(20000);
+    const raceOutlet = await createOutlet(proxy.env, owner, businessId, 'RACE', 'Race Outlet');
+    const raceRegister = await proxy.env.DB.prepare(
+      'SELECT id FROM registers WHERE business_id=? AND outlet_id=?',
+    )
+      .bind(businessId, raceOutlet.body.data.id)
+      .first<{ id: string }>();
+    await proxy.env.DB.prepare(
+      'INSERT INTO inventory_balances(business_id,outlet_id,variant_id,quantity_on_hand,average_cost_minor,updated_at) VALUES(?,?,?,?,?,?)',
+    )
+      .bind(
+        businessId,
+        raceOutlet.body.data.id,
+        product.body.data.variant_id,
+        0,
+        10000,
+        new Date().toISOString(),
+      )
+      .run();
+    const raceStock = await request(
+      proxy.env,
+      `/api/v1/businesses/${businessId}/inventory/adjustments`,
+      {
+        method: 'POST',
+        auth: owner,
+        body: {
+          outlet_id: raceOutlet.body.data.id,
+          variant_id: product.body.data.variant_id,
+          quantity_delta: 1,
+          unit_cost_minor: 10000,
+          reason: 'Sale race stock',
+          idempotency_key: 'sale-race-stock',
+        },
+      },
+    );
+    expect(raceStock.status).toBe(201);
+    const raceShift = await request(proxy.env, `/api/v1/businesses/${businessId}/shifts`, {
+      method: 'POST',
+      auth: owner,
+      body: {
+        outlet_id: raceOutlet.body.data.id,
+        register_id: raceRegister!.id,
+        opening_cash_minor: 0,
+      },
+    });
+    expect(raceShift.status).toBe(201);
+    const raceSales = await Promise.all(
+      ['sale-race-a', 'sale-race-b'].map((client_transaction_id) =>
+        request(proxy.env, `/api/v1/businesses/${businessId}/sales`, {
+          method: 'POST',
+          auth: owner,
+          body: {
+            outlet_id: raceOutlet.body.data.id,
+            register_id: raceRegister!.id,
+            shift_id: raceShift.body.data.id,
+            client_transaction_id,
+            lines: [{ variant_id: product.body.data.variant_id, quantity: 1 }],
+            payments: [{ method: 'cash', amount_minor: 20000 }],
+          },
+        }),
+      ),
+    );
+    expect(raceSales.map((response) => response.status).sort()).toEqual([201, 409]);
+    const raceBalance = await proxy.env.DB.prepare(
+      'SELECT quantity_on_hand FROM inventory_balances WHERE business_id=? AND outlet_id=? AND variant_id=?',
+    )
+      .bind(businessId, raceOutlet.body.data.id, product.body.data.variant_id)
+      .first<{ quantity_on_hand: number }>();
+    expect(raceBalance?.quantity_on_hand).toBe(0);
+    const raceMovements = await proxy.env.DB.prepare(
+      "SELECT COUNT(*) AS count FROM stock_movements WHERE business_id=? AND outlet_id=? AND variant_id=? AND movement_type='sale'",
+    )
+      .bind(businessId, raceOutlet.body.data.id, product.body.data.variant_id)
+      .first<{ count: number }>();
+    expect(raceMovements?.count).toBe(1);
     const saleLine = await proxy.env.DB.prepare('SELECT id FROM sale_lines WHERE sale_id=?')
       .bind(sale.body.data.id)
       .first<{ id: string }>();
@@ -560,10 +634,10 @@ describe('API integration over isolated local D1', () => {
     );
     expect(report.status).toBe(200);
     expect(report.body.data).toMatchObject({
-      transaction_count: 2,
-      net_sales_minor: 40000,
+      transaction_count: 3,
+      net_sales_minor: 60000,
       expenses_minor: 5000,
-      operating_result_minor: 15000,
+      operating_result_minor: 25000,
     });
     const archivedExpense = await request(
       proxy.env,

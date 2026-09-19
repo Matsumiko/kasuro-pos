@@ -587,9 +587,21 @@ export function registerSalesRoutes(app: Hono<Env>): void {
     const statements = lines.results.flatMap((line) => [
       db
         .prepare(
-          'UPDATE inventory_balances SET quantity_on_hand=quantity_on_hand-?,updated_at=? WHERE business_id=? AND outlet_id=? AND variant_id=?',
+          'UPDATE inventory_balances SET quantity_on_hand=quantity_on_hand-?,updated_at=? WHERE business_id=? AND outlet_id=? AND variant_id=? AND quantity_on_hand>=?',
         )
-        .bind(line.quantity, now, membership.businessId, sale.outlet_id, line.variant_id),
+        .bind(
+          line.quantity,
+          now,
+          membership.businessId,
+          sale.outlet_id,
+          line.variant_id,
+          line.quantity,
+        ),
+      db
+        .prepare(
+          'UPDATE inventory_balances SET average_cost_minor=-1 WHERE business_id=? AND outlet_id=? AND variant_id=? AND changes()=0',
+        )
+        .bind(membership.businessId, sale.outlet_id, line.variant_id),
       db
         .prepare(
           'UPDATE sale_lines SET cogs_minor=quantity*unit_cost_minor WHERE id=? AND sale_id=?',
@@ -649,6 +661,11 @@ export function registerSalesRoutes(app: Hono<Env>): void {
     } catch (error) {
       if (String(error).includes('UNIQUE'))
         return c.json({ error: { code: 'CONFLICT', message: 'Sale already completed' } }, 409);
+      if (String(error).includes('average_cost_minor'))
+        return c.json(
+          { error: { code: 'INSUFFICIENT_STOCK', message: 'Insufficient stock' } },
+          409,
+        );
       throw error;
     }
     const completed = await db
@@ -741,27 +758,23 @@ export function registerSalesRoutes(app: Hono<Env>): void {
       return notFound(c);
     const now = new Date().toISOString();
     const result = await c.env.DB.batch([
-      c.env.DB
-        .prepare(
-          "UPDATE sales SET status='void',updated_at=? WHERE id=? AND business_id=? AND status IN ('draft','held')",
-        )
-        .bind(now, saleId, membership.businessId),
-      c.env.DB
-        .prepare(
-          'INSERT INTO audit_events(id,business_id,actor_user_id,actor_member_id,action,entity_type,entity_id,summary_json,request_id,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)',
-        )
-        .bind(
-          createId(),
-          membership.businessId,
-          membership.user.id,
-          membership.memberId,
-          'sales.voided',
-          'sale',
-          saleId,
-          JSON.stringify({ previous_status: sale.status }),
-          c.req.header('X-Request-ID') ?? null,
-          now,
-        ),
+      c.env.DB.prepare(
+        "UPDATE sales SET status='void',updated_at=? WHERE id=? AND business_id=? AND status IN ('draft','held')",
+      ).bind(now, saleId, membership.businessId),
+      c.env.DB.prepare(
+        'INSERT INTO audit_events(id,business_id,actor_user_id,actor_member_id,action,entity_type,entity_id,summary_json,request_id,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)',
+      ).bind(
+        createId(),
+        membership.businessId,
+        membership.user.id,
+        membership.memberId,
+        'sales.voided',
+        'sale',
+        saleId,
+        JSON.stringify({ previous_status: sale.status }),
+        c.req.header('X-Request-ID') ?? null,
+        now,
+      ),
     ]);
     if (!result[0]?.meta.changes) return notFound(c);
     return c.json({ data: { id: saleId, status: 'void' } });
@@ -933,9 +946,26 @@ export function registerSalesRoutes(app: Hono<Env>): void {
       );
       statements.push(
         c.env.DB.prepare(
-          'UPDATE inventory_balances SET quantity_on_hand=quantity_on_hand-?,updated_at=? WHERE business_id=? AND outlet_id=? AND variant_id=?',
-        ).bind(Number(line.quantity), now, membership.businessId, body.outlet_id, line.id),
+          (settings?.stock_policy ?? 'prevent_negative') === 'prevent_negative'
+            ? 'UPDATE inventory_balances SET quantity_on_hand=quantity_on_hand-?,updated_at=? WHERE business_id=? AND outlet_id=? AND variant_id=? AND quantity_on_hand>=?'
+            : 'UPDATE inventory_balances SET quantity_on_hand=quantity_on_hand-?,updated_at=? WHERE business_id=? AND outlet_id=? AND variant_id=?',
+        ).bind(
+          Number(line.quantity),
+          now,
+          membership.businessId,
+          body.outlet_id,
+          line.id,
+          ...((settings?.stock_policy ?? 'prevent_negative') === 'prevent_negative'
+            ? [Number(line.quantity)]
+            : []),
+        ),
       );
+      if ((settings?.stock_policy ?? 'prevent_negative') === 'prevent_negative')
+        statements.push(
+          c.env.DB.prepare(
+            'UPDATE inventory_balances SET average_cost_minor=-1 WHERE business_id=? AND outlet_id=? AND variant_id=? AND changes()=0',
+          ).bind(membership.businessId, body.outlet_id, line.id),
+        );
       statements.push(
         c.env.DB.prepare(
           `INSERT INTO stock_movements(id,business_id,outlet_id,variant_id,movement_type,quantity_delta,unit_cost_minor,source_type,source_id,actor_member_id,client_transaction_id,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
@@ -987,6 +1017,11 @@ export function registerSalesRoutes(app: Hono<Env>): void {
       if (String(error).includes('UNIQUE'))
         return c.json(
           { error: { code: 'CONFLICT', message: 'Sale already exists or stock conflict' } },
+          409,
+        );
+      if (String(error).includes('average_cost_minor'))
+        return c.json(
+          { error: { code: 'INSUFFICIENT_STOCK', message: 'Insufficient stock' } },
           409,
         );
       if (String(error).includes('INSUFFICIENT_STOCK'))
