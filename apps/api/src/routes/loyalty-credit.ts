@@ -159,11 +159,16 @@ export function registerLoyaltyCreditRoutes(app: Hono<Env>): void {
         409,
       );
     const now = new Date().toISOString();
-    await c.env.DB.prepare(
-      'INSERT INTO credit_accounts(id,business_id,customer_id,credit_limit_minor,balance_minor,created_at,updated_at) VALUES(?,?,?,?,0,?,?) ON CONFLICT(business_id,customer_id) DO UPDATE SET credit_limit_minor=excluded.credit_limit_minor,updated_at=excluded.updated_at',
+    const result = await c.env.DB.prepare(
+      'INSERT INTO credit_accounts(id,business_id,customer_id,credit_limit_minor,balance_minor,created_at,updated_at) VALUES(?,?,?,?,0,?,?) ON CONFLICT(business_id,customer_id) DO UPDATE SET credit_limit_minor=excluded.credit_limit_minor,updated_at=excluded.updated_at WHERE excluded.credit_limit_minor>=credit_accounts.balance_minor',
     )
       .bind(createId(), membership.businessId, customerId, limit, now, now)
       .run();
+    if (!result.meta.changes)
+      return c.json(
+        { error: { code: 'CREDIT_LIMIT', message: 'Limit cannot be below outstanding balance' } },
+        409,
+      );
     return c.json({
       data: {
         customer_id: customerId,

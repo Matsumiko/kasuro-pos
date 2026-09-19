@@ -126,6 +126,30 @@ describe('API integration over isolated local D1', () => {
       balance_minor: 15000,
     });
     expect(customerHistory.body.data.loyalty_ledger).toHaveLength(2);
+    const creditRace = await Promise.all([
+      request(proxy.env, `/api/v1/businesses/${businessId}/customers/${customerId}/credit/charge`, {
+        method: 'POST',
+        auth: owner,
+        body: { amount_minor: 20000, source_id: 'invoice-credit-race' },
+      }),
+      request(proxy.env, `/api/v1/businesses/${businessId}/customers/${customerId}/credit`, {
+        method: 'PUT',
+        auth: owner,
+        body: { credit_limit_minor: 20000 },
+      }),
+    ]);
+    expect(creditRace.filter((response) => response.status === 409)).toHaveLength(1);
+    expect(creditRace.some((response) => response.status === 200 || response.status === 201)).toBe(
+      true,
+    );
+    const creditRaceAccount = await proxy.env.DB.prepare(
+      'SELECT credit_limit_minor,balance_minor FROM credit_accounts WHERE business_id=? AND customer_id=?',
+    )
+      .bind(businessId, customerId)
+      .first<{ credit_limit_minor: number; balance_minor: number }>();
+    expect(creditRaceAccount!.credit_limit_minor).toBeGreaterThanOrEqual(
+      creditRaceAccount!.balance_minor,
+    );
     const negativeLoyalty = await request(
       proxy.env,
       `/api/v1/businesses/${businessId}/customers/${customerId}/loyalty/adjust`,
