@@ -579,6 +579,36 @@ describe('API integration over isolated local D1', () => {
       body: { outlet_id: malang.body.data.id, register_id: registerRow!.id, opening_cash_minor: 0 },
     });
     expect(shift.status).toBe(201);
+    const cashIn = await request(
+      proxy.env,
+      `/api/v1/businesses/${businessId}/shifts/${shift.body.data.id}/cash-movements`,
+      {
+        method: 'POST',
+        auth: owner,
+        body: { movement_type: 'cash_in', amount_minor: 100, reason: 'Float' },
+      },
+    );
+    expect(cashIn.status).toBe(201);
+    const cashOuts = await Promise.all(
+      ['cash-out-a', 'cash-out-b'].map((reason) =>
+        request(
+          proxy.env,
+          `/api/v1/businesses/${businessId}/shifts/${shift.body.data.id}/cash-movements`,
+          {
+            method: 'POST',
+            auth: owner,
+            body: { movement_type: 'cash_out', amount_minor: 70, reason },
+          },
+        ),
+      ),
+    );
+    expect(cashOuts.map((response) => response.status).sort()).toEqual([201, 409]);
+    const cashMovementCount = await proxy.env.DB.prepare(
+      "SELECT COUNT(*) AS count FROM cash_movements WHERE shift_id=? AND movement_type='cash_out'",
+    )
+      .bind(shift.body.data.id)
+      .first<{ count: number }>();
+    expect(cashMovementCount?.count).toBe(1);
     const sale = await request(proxy.env, `/api/v1/businesses/${businessId}/sales`, {
       method: 'POST',
       auth: owner,

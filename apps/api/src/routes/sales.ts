@@ -244,8 +244,9 @@ export function registerSalesRoutes(app: Hono<Env>): void {
       );
     const now = new Date().toISOString();
     const id = createId();
-    await c.env.DB.prepare(
-      'INSERT INTO cash_movements(id,business_id,outlet_id,shift_id,movement_type,amount_minor,reason,actor_member_id,created_at) VALUES(?,?,?,?,?,?,?,?,?)',
+    const result = await c.env.DB.prepare(
+      `INSERT INTO cash_movements(id,business_id,outlet_id,shift_id,movement_type,amount_minor,reason,actor_member_id,created_at)
+         SELECT ?,?,?,?,?,?,?,?,? WHERE ?='cash_in' OR ?<=((SELECT opening_cash_minor FROM shifts WHERE id=?)+COALESCE((SELECT SUM(sp.amount_minor) FROM sale_payments sp JOIN sales s ON s.id=sp.sale_id WHERE s.shift_id=? AND s.status IN ('completed','partially_refunded','refunded') AND sp.method='cash'),0)-COALESCE((SELECT SUM(r.amount_minor) FROM refunds r JOIN sales s ON s.id=r.sale_id WHERE s.shift_id=? AND s.status IN ('partially_refunded','refunded') AND r.payment_method='cash' AND r.status='completed'),0)+COALESCE((SELECT SUM(CASE WHEN movement_type='cash_in' THEN amount_minor ELSE -amount_minor END) FROM cash_movements WHERE shift_id=?),0))`,
     )
       .bind(
         id,
@@ -257,8 +258,24 @@ export function registerSalesRoutes(app: Hono<Env>): void {
         body.reason.trim(),
         membership.memberId,
         now,
+        body.movement_type,
+        amount,
+        shift.id,
+        shift.id,
+        shift.id,
+        shift.id,
       )
       .run();
+    if (!result.meta.changes)
+      return c.json(
+        {
+          error: {
+            code: 'INSUFFICIENT_CASH',
+            message: 'Cash out exceeds the expected drawer balance',
+          },
+        },
+        409,
+      );
     return c.json(
       { data: { id, shift_id: shift.id, movement_type: body.movement_type, amount_minor: amount } },
       201,
