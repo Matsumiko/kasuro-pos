@@ -613,20 +613,37 @@ describe('API integration over isolated local D1', () => {
     );
     expect(unsupportedPayment.status).toBe(422);
     expect(unsupportedPayment.body.error?.code).toBe('OFFLINE_PAYMENT_UNSUPPORTED');
-    const refund = await request(proxy.env, `/api/v1/businesses/${businessId}/refunds`, {
-      method: 'POST',
-      auth: owner,
-      body: {
-        sale_id: sale.body.data.id,
-        reason: 'Customer return',
-        payment_method: 'cash',
-        lines: [{ sale_line_id: saleLine!.id, quantity: 1 }],
-      },
-      headers: { 'Idempotency-Key': 'refund-1' },
-    });
-    expect(refund.status).toBe(201);
+    const refundResponses = await Promise.all(
+      ['refund-race-a', 'refund-race-b'].map((idempotencyKey) =>
+        request(proxy.env, `/api/v1/businesses/${businessId}/refunds`, {
+          method: 'POST',
+          auth: owner,
+          body: {
+            sale_id: sale.body.data.id,
+            reason: 'Customer return',
+            payment_method: 'cash',
+            lines: [{ sale_line_id: saleLine!.id, quantity: 1 }],
+          },
+          headers: { 'Idempotency-Key': idempotencyKey },
+        }),
+      ),
+    );
+    expect(refundResponses.map((response) => response.status).sort()).toEqual([201, 409]);
+    const refund = refundResponses.find((response) => response.status === 201)!;
     expect(refund.body.data.status).toBe('completed');
     expect(refund.body.data.sale_status).toBe('refunded');
+    const refundLineState = await proxy.env.DB.prepare(
+      'SELECT refundable_quantity FROM sale_lines WHERE id=?',
+    )
+      .bind(saleLine!.id)
+      .first<{ refundable_quantity: number }>();
+    expect(refundLineState?.refundable_quantity).toBe(0);
+    const refundMovements = await proxy.env.DB.prepare(
+      "SELECT COUNT(*) AS count FROM stock_movements WHERE business_id=? AND source_type='refund' AND source_id=?",
+    )
+      .bind(businessId, refund.body.data.id)
+      .first<{ count: number }>();
+    expect(refundMovements?.count).toBe(1);
     const report = await request(
       proxy.env,
       `/api/v1/businesses/${businessId}/reports/summary?date_from=2026-09-19&date_to=2026-09-19`,

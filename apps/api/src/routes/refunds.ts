@@ -234,6 +234,9 @@ export function registerRefundRoutes(app: Hono<Env>): void {
           )
           .bind(quantity, item.id, body.sale_id, quantity),
         db
+          .prepare('UPDATE sale_lines SET refundable_quantity=-1 WHERE id=? AND changes()=0')
+          .bind(item.id),
+        db
           .prepare(
             'UPDATE inventory_balances SET quantity_on_hand=quantity_on_hand+?,updated_at=? WHERE business_id=? AND outlet_id=? AND variant_id=?',
           )
