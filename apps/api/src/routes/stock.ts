@@ -129,7 +129,7 @@ export function registerStockRoutes(app: Hono<Env>): void {
     const now = new Date().toISOString();
     const statements = [
       c.env.DB.prepare(
-        "UPDATE stock_counts SET status='posted',approved_by_member_id=?,updated_at=? WHERE id=? AND business_id=?",
+        "UPDATE stock_counts SET status='posted',approved_by_member_id=?,updated_at=? WHERE id=? AND business_id=? AND status IN ('counting','review','approved')",
       ).bind(membership.memberId, now, countId, membership.businessId),
     ];
     for (const line of lines.results) {
@@ -137,7 +137,7 @@ export function registerStockRoutes(app: Hono<Env>): void {
       if (!delta) continue;
       statements.push(
         c.env.DB.prepare(
-          'UPDATE inventory_balances SET quantity_on_hand=?,updated_at=? WHERE business_id=? AND outlet_id=? AND variant_id=?',
+          'UPDATE inventory_balances SET quantity_on_hand=?,updated_at=? WHERE business_id=? AND outlet_id=? AND variant_id=? AND changes()>0',
         ).bind(
           line.physical_quantity,
           now,
@@ -148,7 +148,7 @@ export function registerStockRoutes(app: Hono<Env>): void {
       );
       statements.push(
         c.env.DB.prepare(
-          'INSERT INTO stock_movements(id,business_id,outlet_id,variant_id,movement_type,quantity_delta,unit_cost_minor,source_type,source_id,actor_member_id,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)',
+          'INSERT INTO stock_movements(id,business_id,outlet_id,variant_id,movement_type,quantity_delta,unit_cost_minor,source_type,source_id,actor_member_id,created_at) SELECT ?,?,?,?,?,?,?,?,?,?,? WHERE changes()>0',
         ).bind(
           createId(),
           membership.businessId,
@@ -165,7 +165,18 @@ export function registerStockRoutes(app: Hono<Env>): void {
       );
     }
     await c.env.DB.batch(statements);
-    return c.json({ data: { id: countId, status: 'posted' } });
+    const updated = await c.env.DB.prepare(
+      'SELECT status FROM stock_counts WHERE id=? AND business_id=?',
+    )
+      .bind(countId, membership.businessId)
+      .first<{ status: string }>();
+    return c.json({
+      data: {
+        id: countId,
+        status: updated?.status ?? 'posted',
+        idempotent: count.status === 'posted',
+      },
+    });
   });
 
   app.get('/api/v1/businesses/:businessId/stock-transfers', async (c) => {

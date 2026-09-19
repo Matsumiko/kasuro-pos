@@ -363,6 +363,37 @@ describe('API integration over isolated local D1', () => {
       .bind(businessId, transfer.body.data.id)
       .first<{ count: number }>();
     expect(receiveMovements?.count).toBe(1);
+    const stockCount = await request(proxy.env, `/api/v1/businesses/${businessId}/stock-counts`, {
+      method: 'POST',
+      auth: owner,
+      body: {
+        outlet_id: batu.body.data.id,
+        lines: [{ variant_id: product.body.data.variant_id, physical_quantity: 7 }],
+      },
+    });
+    expect(stockCount.status).toBe(201);
+    const concurrentPosts = await Promise.all(
+      [1, 2].map(() =>
+        request(
+          proxy.env,
+          `/api/v1/businesses/${businessId}/stock-counts/${stockCount.body.data.id}/post`,
+          { method: 'POST', auth: owner },
+        ),
+      ),
+    );
+    expect(concurrentPosts.every((response) => response.status === 200)).toBe(true);
+    const countBalance = await proxy.env.DB.prepare(
+      'SELECT quantity_on_hand FROM inventory_balances WHERE business_id=? AND outlet_id=? AND variant_id=?',
+    )
+      .bind(businessId, batu.body.data.id, product.body.data.variant_id)
+      .first<{ quantity_on_hand: number }>();
+    expect(countBalance?.quantity_on_hand).toBe(7);
+    const countMovements = await proxy.env.DB.prepare(
+      "SELECT COUNT(*) AS count FROM stock_movements WHERE business_id=? AND source_type='stock_count' AND source_id=? AND movement_type='stock_count'",
+    )
+      .bind(businessId, stockCount.body.data.id)
+      .first<{ count: number }>();
+    expect(countMovements?.count).toBe(1);
     const concurrentAdjustments = await Promise.all(
       ['adjustment-a', 'adjustment-b'].map((idempotency_key) =>
         request(proxy.env, `/api/v1/businesses/${businessId}/inventory/adjustments`, {
@@ -385,7 +416,7 @@ describe('API integration over isolated local D1', () => {
     )
       .bind(businessId, batu.body.data.id, product.body.data.variant_id)
       .first<{ quantity_on_hand: number; average_cost_minor: number }>();
-    expect(adjustedBalance).toEqual({ quantity_on_hand: 8, average_cost_minor: 12625 });
+    expect(adjustedBalance).toEqual({ quantity_on_hand: 9, average_cost_minor: 12612 });
     const rejectedAdjustment = await request(
       proxy.env,
       `/api/v1/businesses/${businessId}/inventory/adjustments`,
@@ -395,7 +426,7 @@ describe('API integration over isolated local D1', () => {
         body: {
           outlet_id: batu.body.data.id,
           variant_id: product.body.data.variant_id,
-          quantity_delta: -9,
+          quantity_delta: -10,
           unit_cost_minor: 13000,
           reason: 'Negative stock guard',
           idempotency_key: 'adjustment-negative',
