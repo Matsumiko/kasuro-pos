@@ -8,6 +8,13 @@ export const requestSafety: MiddlewareHandler<Env> = async (c, next) => {
   c.header('X-Frame-Options', 'DENY');
   c.header('Referrer-Policy', 'strict-origin-when-cross-origin');
   c.header('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
+  c.header(
+    'Content-Security-Policy',
+    "default-src 'none'; frame-ancestors 'none'; base-uri 'none'",
+  );
+  c.header('Cache-Control', 'no-store');
+  if (c.env.ENVIRONMENT !== 'local')
+    c.header('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
   const contentLength = Number(c.req.header('Content-Length') ?? 0);
   if (contentLength > 1_048_576)
     return c.json(

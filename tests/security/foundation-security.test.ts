@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { memberOutletPredicate, outletScopedWhere, scopedWhere } from '@kasuro/db';
 import { canTransitionSale, escapeCsvCell } from '@kasuro/domain';
 import { isAllowedWebOrigin } from '../../apps/api/src/middleware/origin';
-
+import app from '../../apps/api/src/index';
 describe('security and data boundaries', () => {
   it('requires tenant predicates before resource selectors', () => {
     expect(scopedWhere({ businessId: 'business-a' })).toEqual({
@@ -48,5 +48,35 @@ describe('security and data boundaries', () => {
         'https://kasuro-pos-web.pages.dev',
       ),
     ).toBe(false);
+  });
+
+  it('returns a client error for malformed JSON instead of leaking a server error', async () => {
+    const response = await app.fetch(
+      new Request('http://localhost/api/v1/auth/register', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: '{',
+      }),
+      { ENVIRONMENT: 'local' },
+    );
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({
+      error: { code: 'INVALID_JSON', message: 'Request body must be valid JSON' },
+    });
+  });
+
+  it('sets baseline security headers on API responses', async () => {
+    const response = await app.fetch(new Request('http://localhost/health'), {
+      ENVIRONMENT: 'production',
+      API_VERSION: 'test',
+    });
+    expect(response.status).toBe(200);
+    expect(response.headers.get('Content-Security-Policy')).toBe(
+      "default-src 'none'; frame-ancestors 'none'; base-uri 'none'",
+    );
+    expect(response.headers.get('Cache-Control')).toBe('no-store');
+    expect(response.headers.get('Strict-Transport-Security')).toBe(
+      'max-age=31536000; includeSubDomains',
+    );
   });
 });

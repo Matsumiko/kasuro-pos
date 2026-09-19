@@ -102,6 +102,11 @@ app.notFound((c) => c.json({ error: { code: 'NOT_FOUND', message: 'Not found' } 
 
 app.onError((error, c) => {
   if (error instanceof HTTPException) return withCors(c, error.getResponse());
+  if (error instanceof SyntaxError)
+    return withCors(
+      c,
+      c.json({ error: { code: 'INVALID_JSON', message: 'Request body must be valid JSON' } }, 400),
+    );
   console.error(
     JSON.stringify({
       event: 'request_error',
