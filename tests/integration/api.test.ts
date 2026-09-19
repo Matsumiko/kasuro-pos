@@ -827,8 +827,53 @@ describe('API integration over isolated local D1', () => {
     );
     expect(cashAfterClose.status).toBe(404);
     expect(cashAfterClose.body.error?.code).toBe('NOT_FOUND');
+    const duplicateRacePurchase = await request(
+      proxy.env,
+      `/api/v1/businesses/${businessId}/purchases`,
+      {
+        method: 'POST',
+        auth: owner,
+        body: {
+          supplier_id: supplier.body.data.id,
+          outlet_id: batu.body.data.id,
+          lines: [
+            { variant_id: product.body.data.variant_id, quantity: 1, unit_cost_minor: 14000 },
+          ],
+        },
+      },
+    );
+    expect(duplicateRacePurchase.status).toBe(201);
+    const duplicateRaceLine = await proxy.env.DB.prepare(
+      'SELECT id FROM purchase_order_lines WHERE purchase_order_id=?',
+    )
+      .bind(duplicateRacePurchase.body.data.id)
+      .first<{ id: string }>();
+    const duplicateRaceReceipts = await Promise.all(
+      [1, 2].map(() =>
+        request(
+          proxy.env,
+          `/api/v1/businesses/${businessId}/purchases/${duplicateRacePurchase.body.data.id}/receive`,
+          {
+            method: 'POST',
+            auth: owner,
+            body: {
+              receipt_id: 'duplicate-race-receipt',
+              lines: [{ line_id: duplicateRaceLine!.id, quantity: 1 }],
+            },
+          },
+        ),
+      ),
+    );
+    expect(duplicateRaceReceipts.map((response) => response.status).sort()).toEqual([200, 409]);
+    const duplicateRaceMovements = await proxy.env.DB.prepare(
+      "SELECT COUNT(*) AS count FROM stock_movements WHERE business_id=? AND source_type='purchase_order' AND source_id=?",
+    )
+      .bind(businessId, `${duplicateRacePurchase.body.data.id}:duplicate-race-receipt`)
+      .first<{ count: number }>();
+    expect(duplicateRaceMovements?.count).toBe(1);
 
     const restricted = await register(proxy.env, 'staff@example.test');
+
     const role = await proxy.env.DB.prepare(
       "SELECT id FROM roles WHERE key='inventory_staff' AND business_id IS NULL",
     ).first<{ id: string }>();

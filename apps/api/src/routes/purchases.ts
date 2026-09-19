@@ -295,20 +295,28 @@ export function registerPurchaseRoutes(app: Hono<Env>): void {
           { error: { code: 'RECEIVE_LIMIT', message: 'Received quantity exceeds order' } },
           409,
         );
+      if (String(error).includes('UNIQUE')) {
+        const duplicate = await c.env.DB.prepare(
+          'SELECT 1 FROM stock_movements WHERE business_id=? AND source_type=? AND source_id=? LIMIT 1',
+        )
+          .bind(membership.businessId, 'purchase_order', `${purchase.id}:${receiptId}`)
+          .first();
+        if (duplicate)
+          return c.json({ error: { code: 'CONFLICT', message: 'Receipt already recorded' } }, 409);
+      }
       throw error;
     }
-    const remaining = await c.env.DB.prepare(
-      'SELECT COUNT(*) AS pending FROM purchase_order_lines WHERE purchase_order_id=? AND quantity_received<quantity_ordered',
-    )
-      .bind(purchase.id)
-      .first<{ pending: number }>();
-    const status = (remaining?.pending ?? 0) === 0 ? 'received' : 'partially_received';
     await c.env.DB.prepare(
-      'UPDATE purchase_orders SET status=?,updated_at=? WHERE id=? AND business_id=?',
+      `UPDATE purchase_orders SET status=CASE WHEN EXISTS (SELECT 1 FROM purchase_order_lines WHERE purchase_order_id=? AND quantity_received<quantity_ordered) THEN 'partially_received' ELSE 'received' END,updated_at=? WHERE id=? AND business_id=? AND status IN ('ordered','partially_received')`,
     )
-      .bind(status, new Date().toISOString(), purchase.id, membership.businessId)
+      .bind(purchase.id, new Date().toISOString(), purchase.id, membership.businessId)
       .run();
-    return c.json({ data: { id: purchase.id, status } });
+    const updated = await c.env.DB.prepare(
+      'SELECT status FROM purchase_orders WHERE id=? AND business_id=?',
+    )
+      .bind(purchase.id, membership.businessId)
+      .first<{ status: string }>();
+    return c.json({ data: { id: purchase.id, status: updated?.status ?? 'received' } });
   });
 }
 async function canAccessOutlet(
