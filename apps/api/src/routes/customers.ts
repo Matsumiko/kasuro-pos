@@ -16,11 +16,17 @@ export function registerCustomerRoutes(app: Hono<Env>): void {
       .bind(customerId, membership.businessId)
       .first();
     if (!customer) return notFound(c);
+    const salesScope = membership.allOutlets
+      ? ''
+      : ' AND EXISTS (SELECT 1 FROM member_outlets mo WHERE mo.member_id=? AND mo.outlet_id=s.outlet_id)';
+    const salesBinds = membership.allOutlets
+      ? [membership.businessId, customerId]
+      : [membership.businessId, customerId, membership.memberId];
     const [sales, loyalty, credit, loyaltyAccount, creditAccount] = await Promise.all([
       c.env.DB.prepare(
-        'SELECT id,receipt_number,status,total_minor,created_at FROM sales WHERE business_id=? AND customer_id=? ORDER BY created_at DESC,id DESC LIMIT 50',
+        `SELECT s.id,s.receipt_number,s.outlet_id,s.status,s.total_minor,s.created_at FROM sales s WHERE s.business_id=? AND s.customer_id=?${salesScope} ORDER BY s.created_at DESC,s.id DESC LIMIT 50`,
       )
-        .bind(membership.businessId, customerId)
+        .bind(...salesBinds)
         .all(),
       c.env.DB.prepare(
         'SELECT points_delta,source_type,source_id,created_at FROM loyalty_ledger WHERE business_id=? AND customer_id=? ORDER BY created_at DESC,id DESC LIMIT 50',

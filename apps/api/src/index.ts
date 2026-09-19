@@ -57,7 +57,10 @@ function withCors(
   result.headers.set('Access-Control-Allow-Origin', origin);
   result.headers.set('Access-Control-Allow-Credentials', 'true');
   result.headers.set('Vary', 'Origin');
-  result.headers.set('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-CSRF-Token');
+  result.headers.set(
+    'Access-Control-Allow-Headers',
+    'Content-Type, Authorization, X-CSRF-Token, Idempotency-Key',
+  );
   result.headers.set('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
   return result;
 }
@@ -99,7 +102,13 @@ app.notFound((c) => c.json({ error: { code: 'NOT_FOUND', message: 'Not found' } 
 
 app.onError((error, c) => {
   if (error instanceof HTTPException) return withCors(c, error.getResponse());
-  console.error(JSON.stringify({ event: 'request_error', name: error.name }));
+  console.error(
+    JSON.stringify({
+      event: 'request_error',
+      name: error.name,
+      message: c.env.ENVIRONMENT === 'local' ? error.message : undefined,
+    }),
+  );
   return withCors(
     c,
     c.json({ error: { code: 'INTERNAL_ERROR', message: 'Internal server error' } }, 500),

@@ -92,6 +92,7 @@ export function registerSyncRoutes(app: Hono<Env>): void {
     }
     const innerHeaders = new Headers({
       'Content-Type': 'application/json',
+      Authorization: c.req.header('Authorization') ?? '',
       Cookie: c.req.header('Cookie') ?? '',
       'X-CSRF-Token': c.req.header('X-CSRF-Token') ?? '',
     });
@@ -99,7 +100,7 @@ export function registerSyncRoutes(app: Hono<Env>): void {
       new URL(`/api/v1/businesses/${membership.businessId}/sales`, c.req.url),
       { method: 'POST', headers: innerHeaders, body: JSON.stringify(body) },
     );
-    const response = await app.fetch(innerRequest, c.env, c.executionCtx);
+    const response = await app.fetch(innerRequest, c.env);
     const text = await response.text();
     if (!response.ok)
       return new Response(text, {

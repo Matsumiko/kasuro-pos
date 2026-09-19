@@ -80,7 +80,9 @@ export function registerPurchaseRoutes(app: Hono<Env>): void {
       `SELECT po.id,po.supplier_id,po.outlet_id,po.status,po.subtotal_minor,po.tax_minor,po.total_minor,po.expected_at,po.created_at,s.name AS supplier_name,o.name AS outlet_name
        FROM purchase_orders po LEFT JOIN suppliers s ON s.id=po.supplier_id AND s.business_id=po.business_id LEFT JOIN outlets o ON o.id=po.outlet_id AND o.business_id=po.business_id
        WHERE po.id=? AND po.business_id=?`,
-    ).first<{ outlet_id: string }>();
+    )
+      .bind(c.req.param('purchaseId'), membership.businessId)
+      .first<{ outlet_id: string }>();
     if (!purchase || !(await canAccessOutlet(c.env.DB, membership, purchase.outlet_id)))
       return notFound(c);
     const lines = await c.env.DB.prepare(

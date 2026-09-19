@@ -158,9 +158,17 @@ export function registerPlatformRoutes(app: Hono<Env>): void {
     const session = requireSession(c);
     if (!c.env.DB || !(await isPlatformAdmin(c.env.DB, session.user.id)))
       return c.json({ error: { code: 'FORBIDDEN', message: 'Platform access required' } }, 403);
-    const rows = await c.env.DB.prepare(
-      'SELECT id,actor_user_id,action,entity_type,entity_id,summary_json,created_at FROM platform_audit_events ORDER BY created_at DESC,id DESC LIMIT 100',
-    ).all();
+    const requestedLimit = Number(c.req.query('limit') ?? 100);
+    const limit = Number.isInteger(requestedLimit)
+      ? Math.min(Math.max(requestedLimit, 1), 100)
+      : 100;
+    const entityType = c.req.query('entity_type')?.trim();
+    const query = entityType
+      ? 'SELECT id,actor_user_id,action,entity_type,entity_id,summary_json,created_at FROM platform_audit_events WHERE entity_type=? ORDER BY created_at DESC,id DESC LIMIT ?'
+      : 'SELECT id,actor_user_id,action,entity_type,entity_id,summary_json,created_at FROM platform_audit_events ORDER BY created_at DESC,id DESC LIMIT ?';
+    const rows = entityType
+      ? await c.env.DB.prepare(query).bind(entityType, limit).all()
+      : await c.env.DB.prepare(query).bind(limit).all();
     return c.json({ data: rows.results });
   });
 }

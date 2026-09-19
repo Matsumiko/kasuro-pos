@@ -64,8 +64,11 @@ export function registerLoyaltyCreditRoutes(app: Hono<Env>): void {
     try {
       const results = await c.env.DB.batch([
         c.env.DB.prepare(
-          'INSERT INTO loyalty_accounts(id,business_id,customer_id,points_balance,created_at,updated_at) VALUES(?,?,?,?,?,?) ON CONFLICT(business_id,customer_id) DO UPDATE SET points_balance=points_balance+excluded.points_balance,updated_at=excluded.updated_at WHERE points_balance+excluded.points_balance>=0',
-        ).bind(createId(), membership.businessId, customerId, delta, now, now),
+          'INSERT INTO loyalty_accounts(id,business_id,customer_id,points_balance,created_at,updated_at) VALUES(?,?,?,?,?,?) ON CONFLICT(business_id,customer_id) DO NOTHING',
+        ).bind(createId(), membership.businessId, customerId, 0, now, now),
+        c.env.DB.prepare(
+          'UPDATE loyalty_accounts SET points_balance=points_balance+?,updated_at=? WHERE business_id=? AND customer_id=? AND points_balance+?>=0',
+        ).bind(delta, now, membership.businessId, customerId, delta),
         c.env.DB.prepare(
           'INSERT INTO loyalty_ledger(id,business_id,customer_id,points_delta,source_type,source_id,actor_member_id,created_at) SELECT ?,?,?,?,?,?,?,? WHERE changes()>0',
         ).bind(
@@ -79,7 +82,7 @@ export function registerLoyaltyCreditRoutes(app: Hono<Env>): void {
           now,
         ),
       ]);
-      if (!results[0]?.meta.changes || !results[1]?.meta.changes)
+      if (!results[1]?.meta.changes || !results[2]?.meta.changes)
         return c.json(
           { error: { code: 'CONFLICT', message: 'Points balance cannot be negative' } },
           409,

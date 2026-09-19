@@ -11,3 +11,15 @@ export function outletScopedWhere(scope: OutletTenantScope): { sql: string; bind
   const tenant = scopedWhere(scope);
   return { sql: `${tenant.sql} AND outlet_id = ?`, bindings: [...tenant.bindings, scope.outletId] };
 }
+
+export function memberOutletPredicate(
+  alias: string,
+  allOutlets: boolean,
+): { sql: string; placeholderCount: number } {
+  return allOutlets
+    ? { sql: '', placeholderCount: 0 }
+    : {
+        sql: ` AND EXISTS (SELECT 1 FROM member_outlets mo WHERE mo.member_id=? AND mo.outlet_id=${alias}.outlet_id)`,
+        placeholderCount: 1,
+      };
+}
