@@ -810,6 +810,23 @@ describe('API integration over isolated local D1', () => {
     );
     expect(emptyExpenseList.status).toBe(200);
     expect(emptyExpenseList.body.data).toHaveLength(0);
+    const closeBegin = await request(
+      proxy.env,
+      `/api/v1/businesses/${businessId}/shifts/${shift.body.data.id}/close/begin`,
+      { method: 'POST', auth: owner },
+    );
+    expect(closeBegin.status).toBe(200);
+    const cashAfterClose = await request(
+      proxy.env,
+      `/api/v1/businesses/${businessId}/shifts/${shift.body.data.id}/cash-movements`,
+      {
+        method: 'POST',
+        auth: owner,
+        body: { movement_type: 'cash_in', amount_minor: 1, reason: 'Late cash' },
+      },
+    );
+    expect(cashAfterClose.status).toBe(404);
+    expect(cashAfterClose.body.error?.code).toBe('NOT_FOUND');
 
     const restricted = await register(proxy.env, 'staff@example.test');
     const role = await proxy.env.DB.prepare(
