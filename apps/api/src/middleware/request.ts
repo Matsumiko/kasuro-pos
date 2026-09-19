@@ -2,9 +2,14 @@ import type { MiddlewareHandler } from 'hono';
 import type { Env } from '../index';
 
 const MAX_BODY_BYTES = 1_048_576;
-const AUTH_RATE_WINDOW_MS = 60_000;
-const AUTH_RATE_LIMIT = 30;
-const authRateWindows = new Map<string, { startedAt: number; count: number }>();
+const RATE_WINDOW_MS = 60_000;
+const RATE_POLICIES = {
+  auth: { limit: 30, message: 'Too many authentication requests' },
+  reports: { limit: 20, message: 'Too many report or export requests' },
+  invitations: { limit: 10, message: 'Too many invitation requests' },
+} as const;
+type RatePolicy = keyof typeof RATE_POLICIES;
+const rateWindows = new Map<string, { startedAt: number; count: number }>();
 
 export const requestSafety: MiddlewareHandler<Env> = async (c, next) => {
   const requestId = crypto.randomUUID();
@@ -41,15 +46,12 @@ export const requestSafety: MiddlewareHandler<Env> = async (c, next) => {
       contentLength > MAX_BODY_BYTES ? 413 : 400,
     );
 
-  const rateLimit = authRateLimit(c.req.path, c.req.header('CF-Connecting-IP'));
+  const rateLimit = requestRateLimit(c.req.path, c.req.method, c.req.header('CF-Connecting-IP'));
   if (rateLimit) {
     c.header('Retry-After', String(rateLimit.retryAfterSeconds));
-    c.header('X-RateLimit-Limit', String(AUTH_RATE_LIMIT));
+    c.header('X-RateLimit-Limit', String(rateLimit.limit));
     c.header('X-RateLimit-Remaining', '0');
-    return c.json(
-      { error: { code: 'TOO_MANY_REQUESTS', message: 'Too many authentication requests' } },
-      429,
-    );
+    return c.json({ error: { code: 'TOO_MANY_REQUESTS', message: rateLimit.message } }, 429);
   }
 
   if (['POST', 'PUT', 'PATCH'].includes(c.req.method) && c.req.path.startsWith('/api/')) {
@@ -63,21 +65,37 @@ export const requestSafety: MiddlewareHandler<Env> = async (c, next) => {
   await next();
 };
 
-function authRateLimit(path: string, ip: string | undefined): { retryAfterSeconds: number } | null {
-  if (!ip || (path !== '/api/v1/auth/login' && path !== '/api/v1/auth/register')) return null;
+function requestRateLimit(
+  path: string,
+  method: string,
+  ip: string | undefined,
+): { retryAfterSeconds: number; limit: number; message: string } | null {
+  if (!ip) return null;
+  const policy = ratePolicy(path, method);
+  if (!policy) return null;
   const now = Date.now();
-  const key = `${ip}:${path}`;
-  const current = authRateWindows.get(key);
-  if (!current || now - current.startedAt >= AUTH_RATE_WINDOW_MS) {
-    authRateWindows.set(key, { startedAt: now, count: 1 });
+  for (const [key, window] of rateWindows)
+    if (now - window.startedAt >= RATE_WINDOW_MS) rateWindows.delete(key);
+  const key = `${ip}:${policy}`;
+  const current = rateWindows.get(key);
+  if (!current || now - current.startedAt >= RATE_WINDOW_MS) {
+    rateWindows.set(key, { startedAt: now, count: 1 });
     return null;
   }
   current.count += 1;
-  if (current.count <= AUTH_RATE_LIMIT) return null;
+  const config = RATE_POLICIES[policy];
+  if (current.count <= config.limit) return null;
   return {
-    retryAfterSeconds: Math.max(
-      1,
-      Math.ceil((AUTH_RATE_WINDOW_MS - (now - current.startedAt)) / 1000),
-    ),
+    retryAfterSeconds: Math.max(1, Math.ceil((RATE_WINDOW_MS - (now - current.startedAt)) / 1000)),
+    limit: config.limit,
+    message: config.message,
   };
+}
+
+function ratePolicy(path: string, method: string): RatePolicy | null {
+  if (path === '/api/v1/auth/login' || path === '/api/v1/auth/register') return 'auth';
+  if (method === 'POST' && path.endsWith('/staff/invitations')) return 'invitations';
+  if (method === 'GET' && (path.includes('/reports/') || path.includes('/export/')))
+    return 'reports';
+  return null;
 }

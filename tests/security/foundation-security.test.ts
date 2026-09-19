@@ -119,4 +119,42 @@ describe('security and data boundaries', () => {
       error: { code: 'TOO_MANY_REQUESTS', message: 'Too many authentication requests' },
     });
   });
+
+  it('limits report and invitation bursts by client address', async () => {
+    const cases = [
+      {
+        path: '/api/v1/businesses/demo/reports/overview',
+        method: 'GET',
+        limit: 20,
+        message: 'Too many report or export requests',
+      },
+      {
+        path: '/api/v1/businesses/demo/staff/invitations',
+        method: 'POST',
+        limit: 10,
+        message: 'Too many invitation requests',
+      },
+    ];
+    for (const [index, item] of cases.entries()) {
+      const headers = {
+        'Content-Type': 'application/json',
+        'CF-Connecting-IP': `198.51.100.${50 + index}`,
+      };
+      let response: Response | undefined;
+      for (let attempt = 0; attempt < item.limit + 1; attempt += 1)
+        response = await app.fetch(
+          new Request(`http://localhost${item.path}`, {
+            method: item.method,
+            headers,
+            body: item.method === 'POST' ? '{}' : undefined,
+          }),
+          { ENVIRONMENT: 'local' },
+        );
+      expect(response.status).toBe(429);
+      expect(response.headers.get('X-RateLimit-Limit')).toBe(String(item.limit));
+      expect(await response.json()).toEqual({
+        error: { code: 'TOO_MANY_REQUESTS', message: item.message },
+      });
+    }
+  });
 });
