@@ -781,6 +781,47 @@ describe('API integration over isolated local D1', () => {
       .bind(businessId, refund.body.data.id)
       .first<{ count: number }>();
     expect(refundMovements?.count).toBe(1);
+    const concurrentOfflinePayload = {
+      client_transaction_id: 'offline-sale-concurrent',
+      outlet_id: malang.body.data.id,
+      register_id: registerRow!.id,
+      shift_id: shift.body.data.id,
+      lines: [{ variant_id: product.body.data.variant_id, quantity: 1 }],
+      payment: { method: 'cash', amount_minor: 20000 },
+    };
+    const concurrentOffline = await Promise.all(
+      [1, 2].map(() =>
+        request(proxy.env, `/api/v1/businesses/${businessId}/sync/sales`, {
+          method: 'POST',
+          auth: owner,
+          headers: { 'Idempotency-Key': 'offline-key-concurrent' },
+          body: concurrentOfflinePayload,
+        }),
+      ),
+    );
+    expect(concurrentOffline.some((response) => response.status === 201)).toBe(true);
+    expect(concurrentOffline.every((response) => [200, 201, 202].includes(response.status))).toBe(
+      true,
+    );
+    const concurrentReplay = await request(
+      proxy.env,
+      `/api/v1/businesses/${businessId}/sync/sales`,
+      {
+        method: 'POST',
+        auth: owner,
+        headers: { 'Idempotency-Key': 'offline-key-concurrent' },
+        body: concurrentOfflinePayload,
+      },
+    );
+    expect(concurrentReplay.status).toBe(200);
+    expect(concurrentReplay.body.idempotent).toBe(true);
+    const concurrentSaleCount = await proxy.env.DB.prepare(
+      'SELECT COUNT(*) AS count FROM sales WHERE business_id=? AND client_transaction_id=?',
+    )
+      .bind(businessId, concurrentOfflinePayload.client_transaction_id)
+      .first<{ count: number }>();
+    expect(concurrentSaleCount?.count).toBe(1);
+
     const report = await request(
       proxy.env,
       `/api/v1/businesses/${businessId}/reports/summary?date_from=2026-09-19&date_to=2026-09-19`,
@@ -788,10 +829,10 @@ describe('API integration over isolated local D1', () => {
     );
     expect(report.status).toBe(200);
     expect(report.body.data).toMatchObject({
-      transaction_count: 3,
-      net_sales_minor: 60000,
+      transaction_count: 4,
+      net_sales_minor: 80000,
       expenses_minor: 5000,
-      operating_result_minor: 25000,
+      operating_result_minor: 35000,
     });
     const archivedExpense = await request(
       proxy.env,

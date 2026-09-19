@@ -70,10 +70,11 @@ export function registerSyncRoutes(app: Hono<Env>): void {
         422,
       );
     const payloadHash = await sha256(JSON.stringify(body));
+    const endpointKey = idempotencyKey;
     const existing = await c.env.DB.prepare(
       'SELECT request_hash,response_json FROM idempotency_keys WHERE business_id=? AND endpoint_key=?',
     )
-      .bind(membership.businessId, idempotencyKey)
+      .bind(membership.businessId, endpointKey)
       .first<{ request_hash: string; response_json: string | null }>();
     if (existing) {
       if (existing.request_hash !== payloadHash)
@@ -90,6 +91,41 @@ export function registerSyncRoutes(app: Hono<Env>): void {
         return c.json({ ...JSON.parse(existing.response_json), idempotent: true });
       return c.json({ data: { status: 'pending' }, idempotent: true }, 202);
     }
+    const now = new Date().toISOString();
+    try {
+      await c.env.DB.prepare(
+        'INSERT INTO idempotency_keys(business_id,actor_member_id,endpoint_key,request_hash,response_json,created_at,expires_at) VALUES(?,?,?,?,NULL,?,?)',
+      )
+        .bind(
+          membership.businessId,
+          membership.memberId,
+          endpointKey,
+          payloadHash,
+          now,
+          new Date(Date.now() + 86_400_000).toISOString(),
+        )
+        .run();
+    } catch (error) {
+      if (!String(error).includes('UNIQUE')) throw error;
+      const claimed = await c.env.DB.prepare(
+        'SELECT request_hash,response_json FROM idempotency_keys WHERE business_id=? AND endpoint_key=?',
+      )
+        .bind(membership.businessId, endpointKey)
+        .first<{ request_hash: string; response_json: string | null }>();
+      if (!claimed || claimed.request_hash !== payloadHash)
+        return c.json(
+          {
+            error: {
+              code: 'IDEMPOTENCY_KEY_REUSED',
+              message: 'Idempotency key was used for a different payload',
+            },
+          },
+          409,
+        );
+      if (claimed.response_json)
+        return c.json({ ...JSON.parse(claimed.response_json), idempotent: true });
+      return c.json({ data: { status: 'pending' }, idempotent: true }, 202);
+    }
     const innerHeaders = new Headers({
       'Content-Type': 'application/json',
       Authorization: c.req.header('Authorization') ?? '',
@@ -102,30 +138,23 @@ export function registerSyncRoutes(app: Hono<Env>): void {
     );
     const response = await app.fetch(innerRequest, c.env);
     const text = await response.text();
-    if (!response.ok)
+    if (!response.ok) {
+      await c.env.DB.prepare(
+        'DELETE FROM idempotency_keys WHERE business_id=? AND endpoint_key=? AND response_json IS NULL',
+      )
+        .bind(membership.businessId, endpointKey)
+        .run();
       return new Response(text, {
         status: response.status,
         headers: { 'content-type': response.headers.get('content-type') ?? 'application/json' },
       });
-    const responseBody = JSON.parse(text) as Record<string, unknown>;
-    const now = new Date().toISOString();
-    try {
-      await c.env.DB.prepare(
-        'INSERT INTO idempotency_keys(business_id,actor_member_id,endpoint_key,request_hash,response_json,created_at,expires_at) VALUES(?,?,?,?,?,?,?)',
-      )
-        .bind(
-          membership.businessId,
-          membership.memberId,
-          idempotencyKey,
-          payloadHash,
-          JSON.stringify(responseBody),
-          now,
-          new Date(Date.now() + 86_400_000).toISOString(),
-        )
-        .run();
-    } catch (error) {
-      if (!String(error).includes('UNIQUE')) throw error;
     }
+    const responseBody = JSON.parse(text) as Record<string, unknown>;
+    await c.env.DB.prepare(
+      'UPDATE idempotency_keys SET response_json=? WHERE business_id=? AND endpoint_key=? AND response_json IS NULL',
+    )
+      .bind(JSON.stringify(responseBody), membership.businessId, endpointKey)
+      .run();
     return c.json(responseBody, response.status === 201 ? 201 : 200);
   });
 
