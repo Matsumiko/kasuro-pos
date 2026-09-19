@@ -1,8 +1,8 @@
 import type { Hono } from 'hono';
 import type { Env } from '../index';
 import { createId } from '@kasuro/domain';
+import { sha256 } from '../modules/crypto';
 import { businessContext, requirePermission } from '../middleware/tenant';
-
 export function registerRefundRoutes(app: Hono<Env>): void {
   app.use('/api/v1/businesses/:businessId/refunds', businessContext);
   app.use('/api/v1/businesses/:businessId/refunds/*', businessContext);
@@ -11,13 +11,24 @@ export function registerRefundRoutes(app: Hono<Env>): void {
     const membership = requirePermission(c, 'sales.view');
     if (!c.env.DB) return unavailable(c);
     const saleId = c.req.query('sale_id');
+    const outletScope = membership.allOutlets
+      ? ''
+      : ' AND EXISTS (SELECT 1 FROM member_outlets mo WHERE mo.member_id=? AND mo.outlet_id=s.outlet_id)';
+    const saleScope = saleId ? 'AND r.sale_id=?' : '';
+    const binds = membership.allOutlets
+      ? saleId
+        ? [membership.businessId, saleId]
+        : [membership.businessId]
+      : saleId
+        ? [membership.businessId, saleId, membership.memberId]
+        : [membership.businessId, membership.memberId];
     const result = await c.env.DB.prepare(
       `SELECT r.id,r.sale_id,r.status,r.reason,r.amount_minor,r.payment_method,r.created_at,s.receipt_number,s.outlet_id
        FROM refunds r JOIN sales s ON s.id=r.sale_id AND s.business_id=r.business_id
-       WHERE r.business_id=? ${saleId ? 'AND r.sale_id=?' : ''}
+       WHERE r.business_id=? ${saleScope} ${outletScope}
        ORDER BY r.created_at DESC,r.id DESC LIMIT 100`,
     )
-      .bind(...(saleId ? [membership.businessId, saleId] : [membership.businessId]))
+      .bind(...binds)
       .all();
     return c.json({ data: result.results });
   });
@@ -32,7 +43,17 @@ export function registerRefundRoutes(app: Hono<Env>): void {
     )
       .bind(c.req.param('refundId'), membership.businessId)
       .first();
-    if (!refund) return notFound(c);
+    if (
+      !refund ||
+      !(await canAccessOutlet(
+        c.env.DB,
+        membership.businessId,
+        membership.memberId,
+        membership.allOutlets,
+        String(refund.outlet_id),
+      ))
+    )
+      return notFound(c);
     const lines = await c.env.DB.prepare(
       `SELECT rl.id,rl.sale_line_id,rl.quantity,rl.amount_minor,sl.product_name,sl.sku
        FROM refund_lines rl JOIN sale_lines sl ON sl.id=rl.sale_line_id
@@ -47,25 +68,44 @@ export function registerRefundRoutes(app: Hono<Env>): void {
     const membership = requirePermission(c, 'sales.refund');
     if (!c.env.DB) return unavailable(c);
     const db = c.env.DB;
+    const idempotencyKey = c.req.header('Idempotency-Key')?.trim();
+    if (!idempotencyKey || idempotencyKey.length > 160)
+      return c.json(
+        { error: { code: 'IDEMPOTENCY_REQUIRED', message: 'Idempotency-Key is required' } },
+        422,
+      );
     const body = await c.req.json<{
       sale_id?: string;
       reason?: string;
       payment_method?: string;
       lines?: Array<{ sale_line_id: string; quantity: string | number }>;
     }>();
+    const payloadHash = await sha256(JSON.stringify(body));
+    const existing = await db
+      .prepare('SELECT request_hash,response_json FROM idempotency_keys WHERE business_id=? AND endpoint_key=?')
+      .bind(membership.businessId, `refund:${idempotencyKey}`)
+      .first<{ request_hash: string; response_json: string | null }>();
+    if (existing) {
+      if (existing.request_hash !== payloadHash)
+        return c.json(
+          { error: { code: 'IDEMPOTENCY_KEY_REUSED', message: 'Idempotency key was used for a different payload' } },
+          409,
+        );
+      if (existing.response_json) return c.json({ ...JSON.parse(existing.response_json), idempotent: true });
+      return c.json({ data: { status: 'pending' }, idempotent: true }, 202);
+    }
     if (
       !body.sale_id ||
       !body.reason?.trim() ||
       body.reason.trim().length > 500 ||
-      !body.payment_method?.trim() ||
-      body.payment_method.trim().length > 40 ||
+      !['cash', 'bank_transfer', 'store_credit'].includes(body.payment_method?.trim() ?? '') ||
       !body.lines?.length
     )
       return c.json(
         {
           error: {
             code: 'VALIDATION_ERROR',
-            message: 'Sale, reason, payment method and lines are required',
+            message: 'Sale, valid reason, payment method and lines are required',
           },
         },
         422,
@@ -138,10 +178,24 @@ export function registerRefundRoutes(app: Hono<Env>): void {
       )
       .bind(body.sale_id)
       .first<{ remaining: number }>();
-    const remaining =
-      (remainingRow?.remaining ?? 0) - quantities.reduce((sum, row) => sum + row.quantity!, 0);
-    const nextStatus = remaining === 0 ? 'refunded' : 'partially_refunded';
+    const requestedQuantity = quantities.reduce((sum, row) => sum + row.quantity!, 0);
+    const nextStatus = (remainingRow?.remaining ?? 0) - requestedQuantity === 0
+      ? 'refunded'
+      : 'partially_refunded';
     const statements = [
+      db
+        .prepare(
+          'INSERT INTO idempotency_keys(business_id,actor_member_id,endpoint_key,request_hash,response_json,created_at,expires_at) VALUES(?,?,?,?,?,?,?)',
+        )
+        .bind(
+          membership.businessId,
+          membership.memberId,
+          `refund:${idempotencyKey}`,
+          payloadHash,
+          null,
+          now,
+          new Date(Date.now() + 86_400_000).toISOString(),
+        ),
       db
         .prepare(
           `INSERT INTO refunds(id,business_id,sale_id,status,reason,amount_minor,payment_method,actor_member_id,created_at,updated_at) VALUES(?,?,?,'completed',?,?,?,?,?,?)`,
@@ -152,16 +206,11 @@ export function registerRefundRoutes(app: Hono<Env>): void {
           body.sale_id,
           body.reason.trim(),
           amount,
-          body.payment_method.trim(),
+          body.payment_method!,
           membership.memberId,
           now,
           now,
         ),
-      db
-        .prepare(
-          "UPDATE sales SET status=?,updated_at=? WHERE id=? AND business_id=? AND status IN ('completed','partially_refunded')",
-        )
-        .bind(nextStatus, now, body.sale_id, membership.businessId),
     ];
     for (const { quantity, item } of quantities) {
       statements.push(
@@ -172,9 +221,9 @@ export function registerRefundRoutes(app: Hono<Env>): void {
           .bind(createId(), refundId, item.id, quantity, refundAmount(item, quantity!), now),
         db
           .prepare(
-            'UPDATE sale_lines SET refundable_quantity=refundable_quantity-? WHERE id=? AND sale_id=?',
+            'UPDATE sale_lines SET refundable_quantity=refundable_quantity-? WHERE id=? AND sale_id=? AND refundable_quantity>=?',
           )
-          .bind(quantity, item.id, body.sale_id),
+          .bind(quantity, item.id, body.sale_id, quantity),
         db
           .prepare(
             'UPDATE inventory_balances SET quantity_on_hand=quantity_on_hand+?,updated_at=? WHERE business_id=? AND outlet_id=? AND variant_id=?',
@@ -199,33 +248,77 @@ export function registerRefundRoutes(app: Hono<Env>): void {
           ),
       );
     }
+    statements.push(
+      db
+        .prepare(
+          "UPDATE sales SET status=CASE WHEN NOT EXISTS (SELECT 1 FROM sale_lines WHERE sale_id=? AND refundable_quantity>0) THEN 'refunded' ELSE 'partially_refunded' END,updated_at=? WHERE id=? AND business_id=? AND status IN ('completed','partially_refunded')",
+        )
+        .bind(body.sale_id, now, body.sale_id, membership.businessId),
+    );
+    const responseBody = {
+      data: {
+        id: refundId,
+        sale_id: body.sale_id,
+        amount_minor: amount,
+        status: 'completed',
+        sale_status: nextStatus,
+      },
+    };
+    statements[0] = db
+      .prepare(
+        'INSERT INTO idempotency_keys(business_id,actor_member_id,endpoint_key,request_hash,response_json,created_at,expires_at) VALUES(?,?,?,?,?,?,?)',
+      )
+      .bind(
+        membership.businessId,
+        membership.memberId,
+        `refund:${idempotencyKey}`,
+        payloadHash,
+        JSON.stringify(responseBody),
+        now,
+        new Date(Date.now() + 86_400_000).toISOString(),
+      );
     try {
-      await db.batch(statements);
+      await db.batch([
+        ...statements,
+        db
+          .prepare(
+            'INSERT INTO audit_events(id,business_id,actor_user_id,actor_member_id,action,entity_type,entity_id,summary_json,request_id,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)',
+          )
+          .bind(
+            createId(),
+            membership.businessId,
+            membership.user.id,
+            membership.memberId,
+            'sales.refund.completed',
+            'refund',
+            refundId,
+            JSON.stringify({
+              sale_id: body.sale_id,
+              amount_minor: amount,
+              lines: quantities.map(({ item, quantity }) => ({ sale_line_id: item.id, quantity })),
+            }),
+            c.req.header('X-Request-ID') ?? null,
+            now,
+          ),
+      ]);
     } catch (error) {
       if (String(error).includes('REFUND_LIMIT'))
         return c.json(
           { error: { code: 'REFUND_LIMIT', message: 'Refund quantity is no longer available' } },
           409,
         );
+      if (String(error).includes('REFUND_LINE_SALE_MISMATCH'))
+        return c.json(
+          { error: { code: 'VALIDATION_ERROR', message: 'Refund line does not belong to sale' } },
+          422,
+        );
       if (String(error).includes('UNIQUE'))
         return c.json({ error: { code: 'CONFLICT', message: 'Refund already exists' } }, 409);
       throw error;
     }
-    return c.json(
-      {
-        data: {
-          id: refundId,
-          sale_id: body.sale_id,
-          amount_minor: amount,
-          status: 'completed',
-          sale_status: nextStatus,
-        },
-      },
-      201,
-    );
+    return c.json(responseBody, 201);
   });
 }
-
 async function canAccessOutlet(
   db: D1Database,
   businessId: string,

@@ -12,11 +12,13 @@ export function registerStockRoutes(app: Hono<Env>): void {
   app.get('/api/v1/businesses/:businessId/stock-counts', async (c) => {
     const membership = requirePermission(c, 'inventory.view');
     if (!c.env.DB) return unavailable(c);
-    const result = await c.env.DB.prepare(
-      'SELECT id,outlet_id,status,created_at,updated_at FROM stock_counts WHERE business_id=? ORDER BY created_at DESC LIMIT 100',
-    )
-      .bind(membership.businessId)
-      .all();
+    const result = membership.allOutlets
+      ? await c.env.DB.prepare(
+          'SELECT id,outlet_id,status,created_at,updated_at FROM stock_counts WHERE business_id=? ORDER BY created_at DESC LIMIT 100',
+        ).bind(membership.businessId).all()
+      : await c.env.DB.prepare(
+          'SELECT sc.id,sc.outlet_id,sc.status,sc.created_at,sc.updated_at FROM stock_counts sc JOIN member_outlets mo ON mo.outlet_id=sc.outlet_id WHERE sc.business_id=? AND mo.member_id=? ORDER BY sc.created_at DESC LIMIT 100',
+        ).bind(membership.businessId, membership.memberId).all();
     return c.json({ data: result.results });
   });
 
@@ -97,12 +99,14 @@ export function registerStockRoutes(app: Hono<Env>): void {
     if (!c.env.DB) return unavailable(c);
     const countId = c.req.param('countId');
     const count = await c.env.DB.prepare(
-      "SELECT id,outlet_id,status FROM stock_counts WHERE id=? AND business_id=? AND status IN ('counting','review','approved')",
+      "SELECT id,outlet_id,status FROM stock_counts WHERE id=? AND business_id=? AND status IN ('counting','review','approved','posted')",
     )
       .bind(countId, membership.businessId)
       .first<{ id: string; outlet_id: string; status: string }>();
     if (!count || !(await canAccessOutlet(c.env.DB, membership, count.outlet_id)))
       return notFound(c);
+    if (count.status === 'posted')
+      return c.json({ data: { id: countId, status: 'posted', idempotent: true } });
     const lines = await c.env.DB.prepare(
       'SELECT scl.variant_id,scl.expected_quantity,scl.physical_quantity,ib.average_cost_minor FROM stock_count_lines scl JOIN inventory_balances ib ON ib.business_id=? AND ib.outlet_id=? AND ib.variant_id=scl.variant_id WHERE scl.stock_count_id=?',
     )
@@ -163,11 +167,13 @@ export function registerStockRoutes(app: Hono<Env>): void {
   app.get('/api/v1/businesses/:businessId/stock-transfers', async (c) => {
     const membership = requirePermission(c, 'inventory.view');
     if (!c.env.DB) return unavailable(c);
-    const result = await c.env.DB.prepare(
-      'SELECT id,source_outlet_id,destination_outlet_id,status,created_at,updated_at FROM stock_transfers WHERE business_id=? ORDER BY created_at DESC LIMIT 100',
-    )
-      .bind(membership.businessId)
-      .all();
+    const result = membership.allOutlets
+      ? await c.env.DB.prepare(
+          'SELECT id,source_outlet_id,destination_outlet_id,status,created_at,updated_at FROM stock_transfers WHERE business_id=? ORDER BY created_at DESC LIMIT 100',
+        ).bind(membership.businessId).all()
+      : await c.env.DB.prepare(
+          'SELECT st.id,st.source_outlet_id,st.destination_outlet_id,st.status,st.created_at,st.updated_at FROM stock_transfers st WHERE st.business_id=? AND (EXISTS (SELECT 1 FROM member_outlets mo WHERE mo.member_id=? AND mo.outlet_id=st.source_outlet_id) OR EXISTS (SELECT 1 FROM member_outlets mo WHERE mo.member_id=? AND mo.outlet_id=st.destination_outlet_id)) ORDER BY st.created_at DESC LIMIT 100',
+        ).bind(membership.businessId, membership.memberId, membership.memberId).all();
     return c.json({ data: result.results });
   });
 
@@ -249,12 +255,59 @@ export function registerStockRoutes(app: Hono<Env>): void {
     return c.json({ data: { id: transferId, status: 'requested' } }, 201);
   });
 
+  app.post('/api/v1/businesses/:businessId/stock-transfers/:transferId/send', async (c) => {
+    const membership = requirePermission(c, 'inventory.transfer');
+    if (!c.env.DB) return unavailable(c);
+    const transferId = c.req.param('transferId');
+    const transfer = await c.env.DB.prepare(
+      "SELECT id,source_outlet_id,destination_outlet_id,status FROM stock_transfers WHERE id=? AND business_id=? AND status IN ('requested','approved')",
+    ).bind(transferId, membership.businessId).first<{
+      id: string; source_outlet_id: string; destination_outlet_id: string; status: string;
+    }>();
+    if (!transfer || !(await canAccessOutlet(c.env.DB, membership, transfer.source_outlet_id))) return notFound(c);
+    const lines = await c.env.DB.prepare(
+      'SELECT variant_id,quantity_requested,quantity_sent FROM stock_transfer_lines WHERE transfer_id=?',
+    ).bind(transferId).all<{ variant_id: string; quantity_requested: number; quantity_sent: number }>();
+    if (!lines.results.length) return notFound(c);
+    const pending = lines.results.filter((line) => line.quantity_requested > line.quantity_sent);
+    if (!pending.length) return c.json({ data: { id: transferId, status: 'sent', idempotent: true } });
+    const placeholders = pending.map(() => '?').join(',');
+    const balances = await c.env.DB.prepare(
+      `SELECT variant_id,quantity_on_hand,average_cost_minor FROM inventory_balances WHERE business_id=? AND outlet_id=? AND variant_id IN (${placeholders})`,
+    ).bind(membership.businessId, transfer.source_outlet_id, ...pending.map((line) => line.variant_id)).all<{
+      variant_id: string; quantity_on_hand: number; average_cost_minor: number;
+    }>();
+    const byVariant = new Map(balances.results.map((row) => [row.variant_id, row]));
+    if (pending.some((line) => (byVariant.get(line.variant_id)?.quantity_on_hand ?? 0) < line.quantity_requested - line.quantity_sent))
+      return c.json({ error: { code: 'INSUFFICIENT_STOCK', message: 'Transfer source has insufficient stock' } }, 409);
+    const now = new Date().toISOString();
+    const statements = [];
+    for (const line of pending) {
+      const quantity = line.quantity_requested - line.quantity_sent;
+      const balance = byVariant.get(line.variant_id);
+      statements.push(
+        c.env.DB.prepare(
+          'UPDATE inventory_balances SET quantity_on_hand=quantity_on_hand-?,updated_at=? WHERE business_id=? AND outlet_id=? AND variant_id=? AND quantity_on_hand>=?',
+        ).bind(quantity, now, membership.businessId, transfer.source_outlet_id, line.variant_id, quantity),
+        c.env.DB.prepare(
+          'UPDATE stock_transfer_lines SET quantity_sent=quantity_requested,unit_cost_minor=? WHERE transfer_id=? AND variant_id=? AND quantity_sent<?',
+        ).bind(balance?.average_cost_minor ?? 0, transferId, line.variant_id, line.quantity_requested),
+        c.env.DB.prepare(
+          'INSERT INTO stock_movements(id,business_id,outlet_id,variant_id,movement_type,quantity_delta,unit_cost_minor,source_type,source_id,actor_member_id,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)',
+        ).bind(createId(), membership.businessId, transfer.source_outlet_id, line.variant_id, 'transfer_out', -quantity, balance?.average_cost_minor ?? 0, 'stock_transfer', transferId, membership.memberId, now),
+      );
+    }
+    statements.push(c.env.DB.prepare("UPDATE stock_transfers SET status='sent',updated_at=? WHERE id=? AND business_id=? AND status IN ('requested','approved')").bind(now, transferId, membership.businessId));
+    await c.env.DB.batch(statements);
+    return c.json({ data: { id: transferId, status: 'sent', idempotent: false } });
+  });
+
   app.post('/api/v1/businesses/:businessId/stock-transfers/:transferId/receive', async (c) => {
     const membership = requirePermission(c, 'inventory.transfer');
     if (!c.env.DB) return unavailable(c);
     const transferId = c.req.param('transferId');
     const transfer = await c.env.DB.prepare(
-      "SELECT id,source_outlet_id,destination_outlet_id,status FROM stock_transfers WHERE id=? AND business_id=? AND status IN ('requested','approved','sent','partially_received')",
+      "SELECT id,source_outlet_id,destination_outlet_id,status FROM stock_transfers WHERE id=? AND business_id=? AND status IN ('sent','partially_received')",
     )
       .bind(transferId, membership.businessId)
       .first<{
@@ -266,86 +319,63 @@ export function registerStockRoutes(app: Hono<Env>): void {
     if (!transfer || !(await canAccessOutlet(c.env.DB, membership, transfer.destination_outlet_id)))
       return notFound(c);
     const lines = await c.env.DB.prepare(
-      'SELECT variant_id,quantity_requested,quantity_received FROM stock_transfer_lines WHERE transfer_id=?',
+      `SELECT stl.variant_id,stl.quantity_requested,stl.quantity_received,stl.unit_cost_minor,
+        COALESCE(dst.quantity_on_hand,0) AS destination_quantity,
+        COALESCE(dst.average_cost_minor,0) AS destination_cost
+      FROM stock_transfer_lines stl
+      LEFT JOIN inventory_balances dst ON dst.business_id=? AND dst.outlet_id=? AND dst.variant_id=stl.variant_id
+      WHERE stl.transfer_id=?`,
     )
-      .bind(transferId)
-      .all<{ variant_id: string; quantity_requested: number; quantity_received: number }>();
+      .bind(membership.businessId, transfer.destination_outlet_id, transferId)
+      .all<{
+        variant_id: string;
+        quantity_requested: number;
+        quantity_received: number;
+        unit_cost_minor: number;
+        destination_quantity: number;
+        destination_cost: number;
+      }>();
     if (!lines.results.length) return notFound(c);
+    const pending = lines.results.filter((line) => line.quantity_requested > line.quantity_received);
+    if (!pending.length) return c.json({ data: { id: transferId, status: 'received', idempotent: true } });
     const now = new Date().toISOString();
     const statements = [];
-    for (const line of lines.results) {
+    for (const line of pending) {
       const quantity = line.quantity_requested - line.quantity_received;
-      if (!quantity) continue;
+      const unitCost = line.unit_cost_minor;
       statements.push(
         c.env.DB.prepare(
-          'UPDATE inventory_balances SET quantity_on_hand=quantity_on_hand-?,updated_at=? WHERE business_id=? AND outlet_id=? AND variant_id=? AND quantity_on_hand>=?',
+          'UPDATE inventory_balances SET quantity_on_hand=quantity_on_hand+?,average_cost_minor=CASE WHEN quantity_on_hand > 0 THEN CAST((quantity_on_hand * average_cost_minor + ? * ? + (quantity_on_hand + ?)/2) / (quantity_on_hand + ?) AS INTEGER) ELSE ? END,updated_at=? WHERE business_id=? AND outlet_id=? AND variant_id=?',
         ).bind(
           quantity,
-          now,
-          membership.businessId,
-          transfer.source_outlet_id,
-          line.variant_id,
           quantity,
-        ),
-      );
-      statements.push(
-        c.env.DB.prepare(
-          'UPDATE inventory_balances SET quantity_on_hand=quantity_on_hand+?,updated_at=? WHERE business_id=? AND outlet_id=? AND variant_id=?',
-        ).bind(
+          unitCost,
           quantity,
+          quantity,
+          unitCost,
           now,
           membership.businessId,
           transfer.destination_outlet_id,
           line.variant_id,
         ),
-      );
-      statements.push(
         c.env.DB.prepare(
-          'UPDATE stock_transfer_lines SET quantity_sent=quantity_requested,quantity_received=quantity_requested WHERE transfer_id=? AND variant_id=?',
-        ).bind(transferId, line.variant_id),
-      );
-      statements.push(
+          'UPDATE stock_transfer_lines SET quantity_received=quantity_requested WHERE transfer_id=? AND variant_id=? AND quantity_received<?',
+        ).bind(transferId, line.variant_id, line.quantity_requested),
         c.env.DB.prepare(
           'INSERT INTO stock_movements(id,business_id,outlet_id,variant_id,movement_type,quantity_delta,unit_cost_minor,source_type,source_id,actor_member_id,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)',
         ).bind(
-          createId(),
-          membership.businessId,
-          transfer.source_outlet_id,
-          line.variant_id,
-          'transfer_out',
-          -quantity,
-          0,
-          'stock_transfer',
-          transferId,
-          membership.memberId,
-          now,
-        ),
-      );
-      statements.push(
-        c.env.DB.prepare(
-          'INSERT INTO stock_movements(id,business_id,outlet_id,variant_id,movement_type,quantity_delta,unit_cost_minor,source_type,source_id,actor_member_id,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)',
-        ).bind(
-          createId(),
-          membership.businessId,
-          transfer.destination_outlet_id,
-          line.variant_id,
-          'transfer_in',
-          quantity,
-          0,
-          'stock_transfer',
-          transferId,
-          membership.memberId,
-          now,
+          createId(), membership.businessId, transfer.destination_outlet_id, line.variant_id,
+          'transfer_in', quantity, unitCost, 'stock_transfer', transferId, membership.memberId, now,
         ),
       );
     }
     statements.push(
       c.env.DB.prepare(
-        "UPDATE stock_transfers SET status='received',updated_at=? WHERE id=? AND business_id=?",
+        "UPDATE stock_transfers SET status='received',updated_at=? WHERE id=? AND business_id=? AND status IN ('sent','partially_received')",
       ).bind(now, transferId, membership.businessId),
     );
     await c.env.DB.batch(statements);
-    return c.json({ data: { id: transferId, status: 'received' } });
+    return c.json({ data: { id: transferId, status: 'received', idempotent: false } });
   });
 }
 

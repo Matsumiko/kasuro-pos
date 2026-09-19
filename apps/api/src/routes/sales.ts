@@ -1,13 +1,91 @@
 import type { Hono } from 'hono';
 import type { Env } from '../index';
 import { createId } from '@kasuro/domain';
-import { allocateDiscount, priceLine } from '@kasuro/domain';
+import { allocateDiscount, allocatePayments, priceLine } from '@kasuro/domain';
 import { businessContext, requirePermission } from '../middleware/tenant';
 export function registerSalesRoutes(app: Hono<Env>): void {
   app.use('/api/v1/businesses/:businessId/shifts', businessContext);
   app.use('/api/v1/businesses/:businessId/shifts/*', businessContext);
   app.use('/api/v1/businesses/:businessId/sales', businessContext);
   app.use('/api/v1/businesses/:businessId/sales/*', businessContext);
+
+  app.get('/api/v1/businesses/:businessId/shifts', async (c) => {
+    const membership = requirePermission(c, 'sales.view');
+    if (!c.env.DB) return unavailable(c);
+    const outletId = c.req.query('outlet_id')?.trim() ?? '';
+    if (
+      outletId &&
+      !(await canAccessOutlet(
+        c.env.DB,
+        membership.businessId,
+        membership.memberId,
+        membership.allOutlets,
+        outletId,
+      ))
+    )
+      return notFound(c);
+    const outletScope = outletId ? ' AND s.outlet_id=?' : '';
+    const accessScope = membership.allOutlets
+      ? ''
+      : ' AND EXISTS (SELECT 1 FROM member_outlets mo WHERE mo.member_id=? AND mo.outlet_id=s.outlet_id)';
+    const binds: Array<string> = [membership.businessId];
+    if (outletId) binds.push(outletId);
+    if (!membership.allOutlets) binds.push(membership.memberId);
+    const rows = await c.env.DB.prepare(
+      `SELECT s.id,s.outlet_id,s.register_id,s.cashier_member_id,s.status,s.opening_cash_minor,s.expected_cash_minor,s.actual_cash_minor,s.difference_minor,s.opened_at,s.closed_at,r.name AS register_name,u.display_name AS cashier_name
+       FROM shifts s JOIN registers r ON r.id=s.register_id JOIN business_members bm ON bm.id=s.cashier_member_id JOIN users u ON u.id=bm.user_id
+       WHERE s.business_id=?${outletScope}${accessScope} ORDER BY s.opened_at DESC,s.id DESC LIMIT 100`,
+    )
+      .bind(...binds)
+      .all();
+    return c.json({ data: rows.results });
+  });
+
+  app.get('/api/v1/businesses/:businessId/shifts/:shiftId', async (c) => {
+    const membership = requirePermission(c, 'sales.view');
+    if (!c.env.DB) return unavailable(c);
+    const shift = await c.env.DB.prepare(
+      `SELECT s.id,s.outlet_id,s.register_id,s.cashier_member_id,s.status,s.opening_cash_minor,s.expected_cash_minor,s.actual_cash_minor,s.difference_minor,s.opened_at,s.closed_at,r.name AS register_name,u.display_name AS cashier_name
+       FROM shifts s JOIN registers r ON r.id=s.register_id JOIN business_members bm ON bm.id=s.cashier_member_id JOIN users u ON u.id=bm.user_id
+       WHERE s.id=? AND s.business_id=?`,
+    )
+      .bind(c.req.param('shiftId'), membership.businessId)
+      .first<{
+        id: string;
+        outlet_id: string;
+        register_id: string;
+        cashier_member_id: string;
+        status: string;
+        opening_cash_minor: number;
+        expected_cash_minor: number | null;
+        actual_cash_minor: number | null;
+        difference_minor: number | null;
+        opened_at: string;
+        closed_at: string | null;
+        register_name: string;
+        cashier_name: string;
+      }>();
+    if (
+      !shift ||
+      !(await canAccessOutlet(
+        c.env.DB,
+        membership.businessId,
+        membership.memberId,
+        membership.allOutlets,
+        shift.outlet_id,
+      ))
+    )
+      return notFound(c);
+    const [totals, movements] = await Promise.all([
+      shiftTotals(c.env.DB, shift.id, shift.opening_cash_minor),
+      c.env.DB.prepare(
+        `SELECT id,movement_type,amount_minor,reason,actor_member_id,created_at FROM cash_movements WHERE business_id=? AND shift_id=? ORDER BY created_at,id`,
+      )
+        .bind(membership.businessId, shift.id)
+        .all(),
+    ]);
+    return c.json({ data: { ...shift, ...totals, movements: movements.results } });
+  });
 
   app.get('/api/v1/businesses/:businessId/shifts/current', async (c) => {
     const membership = requirePermission(c, 'pos.use');
@@ -91,7 +169,9 @@ export function registerSalesRoutes(app: Hono<Env>): void {
         .run();
     } catch {
       return c.json(
-        { error: { code: 'CONFLICT', message: 'An active shift already exists' } },
+        {
+          error: { code: 'CONFLICT', message: 'An active shift already exists for this register' },
+        },
         409,
       );
     }
@@ -123,22 +203,23 @@ export function registerSalesRoutes(app: Hono<Env>): void {
       !['cash_in', 'cash_out'].includes(body.movement_type) ||
       amount === undefined ||
       amount <= 0 ||
-      !body.reason?.trim()
+      !body.reason?.trim() ||
+      body.reason.trim().length > 240
     )
       return c.json(
         {
           error: {
             code: 'VALIDATION_ERROR',
-            message: 'Movement type, amount and reason are required',
+            message: 'Movement type, positive amount and reason are required',
           },
         },
         422,
       );
     const shift = await c.env.DB.prepare(
-      "SELECT id,outlet_id FROM shifts WHERE id=? AND business_id=? AND cashier_member_id=? AND status='open'",
+      "SELECT id,outlet_id,opening_cash_minor FROM shifts WHERE id=? AND business_id=? AND cashier_member_id=? AND status='open'",
     )
       .bind(c.req.param('shiftId'), membership.businessId, membership.memberId)
-      .first<{ id: string; outlet_id: string }>();
+      .first<{ id: string; outlet_id: string; opening_cash_minor: number }>();
     if (
       !shift ||
       !(await canAccessOutlet(
@@ -150,6 +231,17 @@ export function registerSalesRoutes(app: Hono<Env>): void {
       ))
     )
       return notFound(c);
+    const totals = await shiftTotals(c.env.DB, shift.id, shift.opening_cash_minor);
+    if (body.movement_type === 'cash_out' && amount > totals.expected_cash_minor)
+      return c.json(
+        {
+          error: {
+            code: 'INSUFFICIENT_CASH',
+            message: 'Cash out exceeds the expected drawer balance',
+          },
+        },
+        409,
+      );
     const now = new Date().toISOString();
     const id = createId();
     await c.env.DB.prepare(
@@ -173,6 +265,40 @@ export function registerSalesRoutes(app: Hono<Env>): void {
     );
   });
 
+  app.post('/api/v1/businesses/:businessId/shifts/:shiftId/close/begin', async (c) => {
+    const membership = requirePermission(c, 'pos.use');
+    if (!c.env.DB) return unavailable(c);
+    const shift = await c.env.DB.prepare(
+      "SELECT id,outlet_id FROM shifts WHERE id=? AND business_id=? AND cashier_member_id=? AND status='open'",
+    )
+      .bind(c.req.param('shiftId'), membership.businessId, membership.memberId)
+      .first<{ id: string; outlet_id: string }>();
+    if (
+      !shift ||
+      !(await canAccessOutlet(
+        c.env.DB,
+        membership.businessId,
+        membership.memberId,
+        membership.allOutlets,
+        shift.outlet_id,
+      ))
+    )
+      return notFound(c);
+    const result = await c.env.DB.prepare(
+      "UPDATE shifts SET status='closing',updated_at=? WHERE id=? AND business_id=? AND cashier_member_id=? AND status='open'",
+    )
+      .bind(
+        new Date().toISOString(),
+        c.req.param('shiftId'),
+        membership.businessId,
+        membership.memberId,
+      )
+      .run();
+    if (!result.meta.changes)
+      return c.json({ error: { code: 'CONFLICT', message: 'Shift is no longer open' } }, 409);
+    return c.json({ data: { id: c.req.param('shiftId'), status: 'closing' } });
+  });
+
   app.post('/api/v1/businesses/:businessId/shifts/:shiftId/close', async (c) => {
     const membership = requirePermission(c, 'pos.use');
     if (!c.env.DB) return unavailable(c);
@@ -184,34 +310,49 @@ export function registerSalesRoutes(app: Hono<Env>): void {
         422,
       );
     const shift = await c.env.DB.prepare(
-      `SELECT id,opening_cash_minor FROM shifts WHERE id=? AND business_id=? AND cashier_member_id=? AND status='open'`,
+      `SELECT id,outlet_id,opening_cash_minor FROM shifts WHERE id=? AND business_id=? AND cashier_member_id=? AND status='closing'`,
     )
       .bind(c.req.param('shiftId'), membership.businessId, membership.memberId)
-      .first<{ id: string; opening_cash_minor: number }>();
-    if (!shift)
-      return c.json({ error: { code: 'NOT_FOUND', message: 'Open shift not found' } }, 404);
-    const totals = await c.env.DB.prepare(
-      `SELECT
-      COALESCE((SELECT SUM(sp.amount_minor-sp.change_minor) FROM sale_payments sp JOIN sales s ON s.id=sp.sale_id WHERE s.shift_id=? AND s.status IN ('completed','partially_refunded','refunded') AND sp.method='cash'),0) AS cash_sales,
-      COALESCE((SELECT SUM(CASE WHEN movement_type='cash_in' THEN amount_minor ELSE -amount_minor END) FROM cash_movements WHERE shift_id=?),0) AS cash_movements`,
+      .first<{ id: string; outlet_id: string; opening_cash_minor: number }>();
+    if (
+      !shift ||
+      !(await canAccessOutlet(
+        c.env.DB,
+        membership.businessId,
+        membership.memberId,
+        membership.allOutlets,
+        shift.outlet_id,
+      ))
     )
-      .bind(shift.id, shift.id)
-      .first<{ cash_sales: number; cash_movements: number }>();
-    const expected =
-      shift.opening_cash_minor + (totals?.cash_sales ?? 0) + (totals?.cash_movements ?? 0);
+      return notFound(c);
+    const totals = await shiftTotals(c.env.DB, shift.id, shift.opening_cash_minor);
     const now = new Date().toISOString();
-    await c.env.DB.prepare(
-      `UPDATE shifts SET status='closed',expected_cash_minor=?,actual_cash_minor=?,difference_minor=?,closed_at=?,updated_at=? WHERE id=? AND business_id=? AND status='open'`,
+    const result = await c.env.DB.prepare(
+      `UPDATE shifts SET status='closed',expected_cash_minor=?,actual_cash_minor=?,difference_minor=?,closed_at=?,updated_at=? WHERE id=? AND business_id=? AND cashier_member_id=? AND status='closing'`,
     )
-      .bind(expected, actual, actual - expected, now, now, shift.id, membership.businessId)
+      .bind(
+        totals.expected_cash_minor,
+        actual,
+        actual - totals.expected_cash_minor,
+        now,
+        now,
+        shift.id,
+        membership.businessId,
+        membership.memberId,
+      )
       .run();
+    if (!result.meta.changes)
+      return c.json({ error: { code: 'CONFLICT', message: 'Shift was already closed' } }, 409);
     return c.json({
       data: {
         id: shift.id,
         status: 'closed',
-        expected_cash_minor: expected,
+        cash_sales_minor: totals.cash_sales_minor,
+        cash_refunds_minor: totals.cash_refunds_minor,
+        cash_movements_minor: totals.cash_movements_minor,
+        expected_cash_minor: totals.expected_cash_minor,
         actual_cash_minor: actual,
-        difference_minor: actual - expected,
+        difference_minor: actual - totals.expected_cash_minor,
       },
     });
   });
@@ -340,6 +481,22 @@ export function registerSalesRoutes(app: Hono<Env>): void {
   app.post('/api/v1/businesses/:businessId/sales/:saleId/resume', async (c) => {
     const membership = requirePermission(c, 'sales.create');
     if (!c.env.DB) return unavailable(c);
+    const sale = await c.env.DB.prepare(
+      "SELECT id,outlet_id FROM sales WHERE id=? AND business_id=? AND cashier_member_id=? AND status='held'",
+    )
+      .bind(c.req.param('saleId'), membership.businessId, membership.memberId)
+      .first<{ id: string; outlet_id: string }>();
+    if (
+      !sale ||
+      !(await canAccessOutlet(
+        c.env.DB,
+        membership.businessId,
+        membership.memberId,
+        membership.allOutlets,
+        sale.outlet_id,
+      ))
+    )
+      return notFound(c);
     const result = await c.env.DB.prepare(
       "UPDATE sales SET status='draft',updated_at=? WHERE id=? AND business_id=? AND cashier_member_id=? AND status='held'",
     )
@@ -388,20 +545,24 @@ export function registerSalesRoutes(app: Hono<Env>): void {
       return notFound(c);
     const payments = body.payments ?? [];
     const parsedPayments = payments.map((payment) => ({
-      ...payment,
-      amount: integer(payment.amount_minor),
+      method: payment.method as 'cash' | 'transfer' | 'qris',
+      amount: BigInt(integer(payment.amount_minor) ?? -1),
+      ...(payment.reference === undefined ? {} : { reference: payment.reference }),
     }));
-    if (
-      !parsedPayments.length ||
-      parsedPayments.some(
-        (payment) => !payment.method || payment.amount === undefined || payment.amount <= 0,
-      ) ||
-      parsedPayments.reduce((sum, payment) => sum + (payment.amount ?? 0), 0) < sale.total_minor
-    )
+    let allocatedPayments;
+    try {
+      allocatedPayments = allocatePayments(BigInt(sale.total_minor), parsedPayments);
+    } catch {
       return c.json(
-        { error: { code: 'PAYMENT_REQUIRED', message: 'Payment must cover the sale total' } },
+        {
+          error: {
+            code: 'PAYMENT_REQUIRED',
+            message: 'Valid payment methods and references are required',
+          },
+        },
         422,
       );
+    }
     const lines = await db
       .prepare(
         'SELECT id,variant_id,quantity,unit_cost_minor FROM sale_lines WHERE sale_id=? ORDER BY id',
@@ -422,11 +583,7 @@ export function registerSalesRoutes(app: Hono<Env>): void {
         );
     }
     const now = new Date().toISOString();
-    const cashPayment = parsedPayments.find((payment) => payment.method === 'cash');
-    const nonCashTotal = parsedPayments
-      .filter((payment) => payment !== cashPayment)
-      .reduce((sum, payment) => sum + (payment.amount ?? 0), 0);
-    const change = (cashPayment?.amount ?? 0) - Math.max(0, sale.total_minor - nonCashTotal);
+    const change = allocatedPayments.reduce((sum, payment) => sum + payment.change, 0n);
     const statements = lines.results.flatMap((line) => [
       db
         .prepare(
@@ -456,7 +613,7 @@ export function registerSalesRoutes(app: Hono<Env>): void {
           now,
         ),
     ]);
-    for (const payment of parsedPayments)
+    for (const payment of allocatedPayments)
       statements.push(
         db
           .prepare(
@@ -466,10 +623,10 @@ export function registerSalesRoutes(app: Hono<Env>): void {
             createId(),
             sale.id,
             payment.method,
-            Math.min(payment.amount!, sale.total_minor),
-            payment.amount,
-            payment === cashPayment ? Math.max(0, change) : 0,
-            payment.reference ?? null,
+            Number(payment.applied),
+            Number(payment.received),
+            Number(payment.change),
+            payment.reference?.trim() || null,
             now,
           ),
       );
@@ -505,7 +662,7 @@ export function registerSalesRoutes(app: Hono<Env>): void {
         status: completed?.status,
         total_minor: sale.total_minor,
         cogs_minor: completed?.cogs_minor ?? cogs,
-        change_minor: Math.max(0, change),
+        change_minor: Number(change),
       },
     });
   });
@@ -513,10 +670,18 @@ export function registerSalesRoutes(app: Hono<Env>): void {
   app.get('/api/v1/businesses/:businessId/sales/held', async (c) => {
     const membership = requirePermission(c, 'sales.view');
     if (!c.env.DB) return unavailable(c);
+    const outletScope = membership.allOutlets
+      ? ''
+      : ' AND EXISTS (SELECT 1 FROM member_outlets mo WHERE mo.member_id=? AND mo.outlet_id=s.outlet_id)';
+    const bindings = membership.allOutlets
+      ? [membership.businessId, membership.memberId]
+      : [membership.businessId, membership.memberId, membership.memberId];
     const result = await c.env.DB.prepare(
-      `SELECT id,outlet_id,status,total_minor,created_at FROM sales WHERE business_id=? AND cashier_member_id=? AND status='held' ORDER BY created_at DESC,id DESC LIMIT 50`,
+      `SELECT s.id,s.outlet_id,s.status,s.total_minor,s.created_at FROM sales s
+       WHERE s.business_id=? AND s.cashier_member_id=? AND s.status='held'${outletScope}
+       ORDER BY s.created_at DESC,s.id DESC LIMIT 50`,
     )
-      .bind(membership.businessId, membership.memberId)
+      .bind(...bindings)
       .all();
     return c.json({ data: result.results });
   });
@@ -529,8 +694,18 @@ export function registerSalesRoutes(app: Hono<Env>): void {
       'SELECT id,receipt_number,outlet_id,register_id,shift_id,status,subtotal_minor,discount_minor,tax_minor,total_minor,created_at FROM sales WHERE id=? AND business_id=?',
     )
       .bind(saleId, membership.businessId)
-      .first();
-    if (!sale) return notFound(c);
+      .first<{ id: string; outlet_id: string; [key: string]: unknown }>();
+    if (
+      !sale ||
+      !(await canAccessOutlet(
+        c.env.DB,
+        membership.businessId,
+        membership.memberId,
+        membership.allOutlets,
+        sale.outlet_id,
+      ))
+    )
+      return notFound(c);
     const lines = await c.env.DB.prepare(
       'SELECT id,variant_id,product_name,sku,quantity,unit_price_minor,item_discount_minor,tax_minor,line_net_minor,refundable_quantity FROM sale_lines WHERE sale_id=? ORDER BY id',
     )
@@ -549,16 +724,46 @@ export function registerSalesRoutes(app: Hono<Env>): void {
     if (!c.env.DB) return unavailable(c);
     const saleId = c.req.param('saleId');
     const sale = await c.env.DB.prepare(
-      "SELECT id,status FROM sales WHERE id=? AND business_id=? AND cashier_member_id=? AND status IN ('draft','held')",
+      "SELECT id,outlet_id,status FROM sales WHERE id=? AND business_id=? AND cashier_member_id=? AND status IN ('draft','held')",
     )
       .bind(saleId, membership.businessId, membership.memberId)
-      .first<{ id: string; status: string }>();
-    if (!sale) return notFound(c);
-    await c.env.DB.prepare(
-      "UPDATE sales SET status='void',updated_at=? WHERE id=? AND business_id=? AND status IN ('draft','held')",
+      .first<{ id: string; outlet_id: string; status: string }>();
+    if (
+      !sale ||
+      !(await canAccessOutlet(
+        c.env.DB,
+        membership.businessId,
+        membership.memberId,
+        membership.allOutlets,
+        sale.outlet_id,
+      ))
     )
-      .bind(new Date().toISOString(), saleId, membership.businessId)
-      .run();
+      return notFound(c);
+    const now = new Date().toISOString();
+    const result = await c.env.DB.batch([
+      c.env.DB
+        .prepare(
+          "UPDATE sales SET status='void',updated_at=? WHERE id=? AND business_id=? AND status IN ('draft','held')",
+        )
+        .bind(now, saleId, membership.businessId),
+      c.env.DB
+        .prepare(
+          'INSERT INTO audit_events(id,business_id,actor_user_id,actor_member_id,action,entity_type,entity_id,summary_json,request_id,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)',
+        )
+        .bind(
+          createId(),
+          membership.businessId,
+          membership.user.id,
+          membership.memberId,
+          'sales.voided',
+          'sale',
+          saleId,
+          JSON.stringify({ previous_status: sale.status }),
+          c.req.header('X-Request-ID') ?? null,
+          now,
+        ),
+    ]);
+    if (!result[0]?.meta.changes) return notFound(c);
     return c.json({ data: { id: saleId, status: 'void' } });
   });
 
@@ -662,6 +867,26 @@ export function registerSalesRoutes(app: Hono<Env>): void {
     }
     const saleId = createId();
     const now = new Date().toISOString();
+    const payments = body.payments ?? (body.payment ? [body.payment] : []);
+    const parsedPayments = payments.map((payment) => ({
+      method: payment.method as 'cash' | 'transfer' | 'qris',
+      amount: BigInt(integer(payment.amount_minor) ?? -1),
+      ...(payment.reference === undefined ? {} : { reference: payment.reference }),
+    }));
+    let allocatedPayments;
+    try {
+      allocatedPayments = allocatePayments(BigInt(total), parsedPayments);
+    } catch {
+      return c.json(
+        {
+          error: {
+            code: 'PAYMENT_REQUIRED',
+            message: 'Valid payment methods and references are required',
+          },
+        },
+        422,
+      );
+    }
     const statements = [
       c.env.DB.prepare(
         `INSERT INTO sales(id,business_id,outlet_id,register_id,shift_id,cashier_member_id,customer_id,receipt_number,client_transaction_id,status,currency_code,subtotal_minor,discount_minor,tax_minor,total_minor,cogs_minor,created_at,updated_at) VALUES(?,?,?,?,?,?,?,NULL,?,'completed','IDR',?,?,?,?,?,?,?)`,
@@ -730,37 +955,18 @@ export function registerSalesRoutes(app: Hono<Env>): void {
         ),
       );
     }
-    const payments = body.payments ?? (body.payment ? [body.payment] : []);
-    if (!payments.length)
-      return c.json(
-        { error: { code: 'PAYMENT_REQUIRED', message: 'At least one payment is required' } },
-        422,
-      );
-    const parsedPayments = payments.map((payment) => ({
-      ...payment,
-      amount: integer(payment.amount_minor),
-    }));
-    if (
-      parsedPayments.some(
-        (payment) => !payment.method || payment.amount === undefined || payment.amount <= 0,
-      ) ||
-      parsedPayments.reduce((sum, payment) => sum + (payment.amount ?? 0), 0) < Number(total)
-    )
-      return c.json(
-        { error: { code: 'PAYMENT_REQUIRED', message: 'Payment must cover the sale total' } },
-        422,
-      );
-    const cashPayment = parsedPayments.find((payment) => payment.method === 'cash');
-    const change =
-      (cashPayment?.amount ?? 0) -
-      Math.max(
-        0,
-        Number(total) -
-          parsedPayments
-            .filter((payment) => payment !== cashPayment)
-            .reduce((sum, payment) => sum + (payment.amount ?? 0), 0),
-      );
-    for (const payment of parsedPayments)
+    const cogs = lines.reduce((sum, line) => {
+      const variant = variants.find((item) => item.id === line.id)!;
+      return sum + Number(line.quantity) * variant.cost_minor;
+    }, 0);
+    statements.push(
+      c.env.DB.prepare('UPDATE sales SET cogs_minor=? WHERE id=? AND business_id=?').bind(
+        cogs,
+        saleId,
+        membership.businessId,
+      ),
+    );
+    for (const payment of allocatedPayments)
       statements.push(
         c.env.DB.prepare(
           `INSERT INTO sale_payments(id,sale_id,method,amount_minor,received_minor,change_minor,reference,created_at) VALUES(?,?,?,?,?,?,?,?)`,
@@ -768,10 +974,10 @@ export function registerSalesRoutes(app: Hono<Env>): void {
           createId(),
           saleId,
           payment.method,
-          Math.min(payment.amount!, Number(total)),
-          payment.amount,
-          payment === cashPayment ? Math.max(0, change) : 0,
-          payment.reference ?? null,
+          Number(payment.applied),
+          Number(payment.received),
+          Number(payment.change),
+          payment.reference?.trim() || null,
           now,
         ),
       );
@@ -806,7 +1012,9 @@ export function registerSalesRoutes(app: Hono<Env>): void {
           discount_minor: Number(discount),
           tax_minor: Number(tax),
           total_minor: Number(total),
-          change_minor: Math.max(0, change),
+          change_minor: Number(
+            allocatedPayments.reduce((sum, payment) => sum + payment.change, 0n),
+          ),
         },
       },
       201,
@@ -816,10 +1024,18 @@ export function registerSalesRoutes(app: Hono<Env>): void {
   app.get('/api/v1/businesses/:businessId/sales', async (c) => {
     const membership = requirePermission(c, 'sales.view');
     if (!c.env.DB) return unavailable(c);
+    const outletScope = membership.allOutlets
+      ? ''
+      : ' AND EXISTS (SELECT 1 FROM member_outlets mo WHERE mo.member_id=? AND mo.outlet_id=s.outlet_id)';
+    const bindings = membership.allOutlets
+      ? [membership.businessId]
+      : [membership.businessId, membership.memberId];
     const result = await c.env.DB.prepare(
-      `SELECT id,receipt_number,outlet_id,status,subtotal_minor,discount_minor,tax_minor,total_minor,created_at FROM sales WHERE business_id=? ORDER BY created_at DESC,id DESC LIMIT 100`,
+      `SELECT s.id,s.receipt_number,s.outlet_id,s.status,s.subtotal_minor,s.discount_minor,s.tax_minor,s.total_minor,s.created_at
+       FROM sales s WHERE s.business_id=?${outletScope}
+       ORDER BY s.created_at DESC,s.id DESC LIMIT 100`,
     )
-      .bind(membership.businessId)
+      .bind(...bindings)
       .all();
     return c.json({ data: result.results });
   });
@@ -864,6 +1080,40 @@ async function loadVariants(
     .bind(businessId, ...uniqueIds)
     .all<VariantRow>();
   return result.results;
+}
+
+async function shiftTotals(
+  db: D1Database,
+  shiftId: string,
+  openingCashMinor: number,
+): Promise<{
+  cash_sales_minor: number;
+  cash_refunds_minor: number;
+  cash_movements_minor: number;
+  expected_cash_minor: number;
+}> {
+  const row = await db
+    .prepare(
+      `SELECT
+       COALESCE((SELECT SUM(sp.amount_minor) FROM sale_payments sp JOIN sales s ON s.id=sp.sale_id WHERE s.shift_id=? AND s.status IN ('completed','partially_refunded','refunded') AND sp.method='cash'),0) AS cash_sales_minor,
+       COALESCE((SELECT SUM(r.amount_minor) FROM refunds r JOIN sales s ON s.id=r.sale_id WHERE s.shift_id=? AND s.status IN ('partially_refunded','refunded') AND r.payment_method='cash' AND r.status='completed'),0) AS cash_refunds_minor,
+       COALESCE((SELECT SUM(CASE WHEN movement_type='cash_in' THEN amount_minor ELSE -amount_minor END) FROM cash_movements WHERE shift_id=?),0) AS cash_movements_minor`,
+    )
+    .bind(shiftId, shiftId, shiftId)
+    .first<{
+      cash_sales_minor: number;
+      cash_refunds_minor: number;
+      cash_movements_minor: number;
+    }>();
+  const cashSales = row?.cash_sales_minor ?? 0;
+  const cashRefunds = row?.cash_refunds_minor ?? 0;
+  const cashMovements = row?.cash_movements_minor ?? 0;
+  return {
+    cash_sales_minor: cashSales,
+    cash_refunds_minor: cashRefunds,
+    cash_movements_minor: cashMovements,
+    expected_cash_minor: openingCashMinor + cashSales - cashRefunds + cashMovements,
+  };
 }
 
 async function canAccessOutlet(

@@ -22,6 +22,7 @@ export const businessContext: MiddlewareHandler<Env> = async (c, next) => {
     `SELECT bm.id, bm.all_outlets,
       GROUP_CONCAT(rp.permission_key) AS permission_keys
     FROM business_members bm
+    JOIN businesses b ON b.id = bm.business_id AND b.status = 'active'
     LEFT JOIN member_roles mr ON mr.member_id = bm.id
     LEFT JOIN role_permissions rp ON rp.role_id = mr.role_id
     WHERE bm.business_id = ? AND bm.user_id = ? AND bm.status = 'active'

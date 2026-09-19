@@ -54,3 +54,81 @@ export function allocateDiscount(
   }
   return result;
 }
+export type PricedCart = {
+  lines: PricedLine[];
+  subtotal: Money;
+  discount: Money;
+  tax: Money;
+  total: Money;
+};
+
+export function priceCart(
+  lines: readonly CartLine[],
+  discount: Money,
+  taxMode: 'inclusive' | 'exclusive',
+): PricedCart {
+  const baseLines = lines.map((line) => priceLine(line, taxMode));
+  const allocation = allocateDiscount(baseLines, discount);
+  const pricedLines = baseLines.map((line) =>
+    priceLine(
+      { ...line, itemDiscount: line.itemDiscount + (allocation.get(line.id) ?? 0n) },
+      taxMode,
+    ),
+  );
+  const subtotal = baseLines.reduce((sum, line) => sum + line.gross - line.itemDiscount, 0n);
+  const allocatedDiscount = [...allocation.values()].reduce((sum, value) => sum + value, 0n);
+  const tax = pricedLines.reduce((sum, line) => sum + line.tax, 0n);
+  const total = pricedLines.reduce((sum, line) => sum + line.net, 0n);
+  return { lines: pricedLines, subtotal, discount: allocatedDiscount, tax, total };
+}
+
+export type PaymentInput = {
+  method: 'cash' | 'transfer' | 'qris';
+  amount: Money;
+  reference?: string;
+};
+
+export type AllocatedPayment = PaymentInput & {
+  applied: Money;
+  received: Money;
+  change: Money;
+};
+
+export function allocatePayments(
+  total: Money,
+  payments: readonly PaymentInput[],
+): AllocatedPayment[] {
+  if (total < 0n || payments.length === 0) throw new Error('Payment is required');
+  if (payments.filter((payment) => payment.method === 'cash').length > 1)
+    throw new Error('Only one cash payment is allowed');
+  if (payments.some((payment) => payment.amount <= 0n))
+    throw new Error('Payment amount is invalid');
+  if (payments.some((payment) => payment.method !== 'cash' && !payment.reference?.trim()))
+    throw new Error('Non-cash payment reference is required');
+  const nonCashTotal = payments
+    .filter((payment) => payment.method !== 'cash')
+    .reduce((sum, payment) => sum + payment.amount, 0n);
+  if (nonCashTotal > total || payments.reduce((sum, payment) => sum + payment.amount, 0n) < total)
+    throw new Error('Payment does not cover total');
+  let remaining = total;
+  const applied = payments.map(() => 0n);
+  payments.forEach((payment, index) => {
+    if (payment.method === 'cash') return;
+    applied[index] = payment.amount < remaining ? payment.amount : remaining;
+    remaining -= applied[index];
+  });
+  payments.forEach((payment, index) => {
+    if (payment.method !== 'cash') return;
+    applied[index] = payment.amount < remaining ? payment.amount : remaining;
+    remaining -= applied[index];
+  });
+  return payments.map((payment, index) => {
+    const appliedAmount = applied[index] ?? 0n;
+    return {
+      ...payment,
+      applied: appliedAmount,
+      received: payment.amount,
+      change: payment.method === 'cash' ? payment.amount - appliedAmount : 0n,
+    };
+  });
+}

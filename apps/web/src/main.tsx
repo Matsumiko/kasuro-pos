@@ -7,7 +7,7 @@ import {
   queueOfflineSale,
   type OfflineSalePayload,
 } from './lib/offline';
-import { StrictMode, useEffect, useMemo, useState } from 'react';
+import { StrictMode, useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import {
   BrowserRouter,
@@ -33,13 +33,56 @@ async function bootstrapCsrf(): Promise<void> {
 }
 
 type Product = {
+  id?: string;
   variant_id: string;
   name: string;
   sku: string;
+  price_minor?: number;
   selling_price_minor: number;
   variant_label: string;
 };
+type PaymentMethod = 'cash' | 'transfer' | 'qris';
+type PaymentEntry = { id: string; method: PaymentMethod; amount: string; reference: string };
 type Business = { id: string; name: string; slug: string; member_id: string; all_outlets: number };
+type SetupState = {
+  id: string;
+  name: string;
+  slug: string;
+  timezone: string;
+  currency_code: string;
+  setup_step:
+    'business' | 'outlet' | 'configure' | 'products' | 'staff' | 'first-sale' | 'complete';
+  setup_completed_at: string | null;
+  outlet_count: number;
+  product_count: number;
+  staff_count: number;
+};
+type Outlet = {
+  id: string;
+  code: string;
+  name: string;
+  address?: string | null;
+  phone?: string | null;
+  timezone?: string | null;
+  status: 'active' | 'inactive';
+};
+type StaffMember = {
+  id: string;
+  user_id: string;
+  email: string;
+  display_name: string | null;
+  status: string;
+  all_outlets: number;
+  role_keys: string | null;
+  outlet_ids: string | null;
+};
+const ACTIVE_BUSINESS_KEY = 'kasuro-active-business';
+function readActiveBusinessId(businesses: Business[]): string {
+  const stored = localStorage.getItem(ACTIVE_BUSINESS_KEY);
+  return businesses.some((business) => business.id === stored)
+    ? stored!
+    : (businesses[0]?.id ?? '');
+}
 type SaleSummary = {
   id: string;
   receipt_number: string | null;
@@ -96,30 +139,49 @@ function Layout({ children }: { children: React.ReactNode }) {
   const [online, setOnline] = useState(navigator.onLine);
   const [pendingCount, setPendingCount] = useState(0);
   const [conflictCount, setConflictCount] = useState(0);
+  const [businesses, setBusinesses] = useState<Business[]>([]);
+  const [businessId, setBusinessId] = useState('');
   const refreshOffline = async () => {
     setPendingCount((await listPendingOfflineSales()).length);
     setConflictCount((await listOfflineConflicts()).length);
   };
+  useEffect(() => {
+    void api<Business[]>('/api/v1/businesses')
+      .then((items) => {
+        setBusinesses(items);
+        setBusinessId(readActiveBusinessId(items));
+      })
+      .catch(() => setBusinesses([]));
+  }, [location.pathname]);
   useEffect(() => {
     const on = () => {
       setOnline(true);
       void syncOfflineSales(API).then(refreshOffline).catch(refreshOffline);
     };
     const off = () => setOnline(false);
-    const changed = () => void refreshOffline();
+    const changed = () => {
+      void refreshOffline();
+      void api<Business[]>('/api/v1/businesses').then((items) => {
+        setBusinesses(items);
+        setBusinessId(readActiveBusinessId(items));
+      });
+    };
     addEventListener('online', on);
     addEventListener('offline', off);
     addEventListener('kasuro-offline-queue-changed', changed);
+    addEventListener('kasuro-business-changed', changed);
     void refreshOffline();
     return () => {
       removeEventListener('online', on);
       removeEventListener('offline', off);
       removeEventListener('kasuro-offline-queue-changed', changed);
+      removeEventListener('kasuro-business-changed', changed);
     };
   }, []);
   const links: Array<[string, string]> = [
     ['/app/dashboard', 'Ringkasan'],
     ['/app/pos', 'Kasir'],
+    ['/app/shifts', 'Shift'],
     ['/app/products', 'Produk'],
     ['/app/inventory', 'Stok'],
     ['/app/purchases', 'Pembelian'],
@@ -127,6 +189,8 @@ function Layout({ children }: { children: React.ReactNode }) {
     ['/app/import-export', 'Import / Export'],
     ['/app/customers', 'Pelanggan'],
     ['/app/refunds', 'Refund'],
+    ['/app/staff', 'Tim'],
+    ['/app/outlets', 'Outlet'],
   ];
   return (
     <div className="workspace">
@@ -162,9 +226,26 @@ function Layout({ children }: { children: React.ReactNode }) {
       </aside>
       <main className="workspace-main">
         <header className="workspace-top">
-          <div>
+          <div className="top-context">
             <span className="workspace-kicker">OPERASIONAL</span>
-            <strong> Toko aktif</strong>
+            <label className="top-business-select">
+              <span className="visually-hidden">Bisnis aktif</span>
+              <select
+                aria-label="Bisnis aktif"
+                value={businessId}
+                onChange={(event) => {
+                  localStorage.setItem(ACTIVE_BUSINESS_KEY, event.target.value);
+                  setBusinessId(event.target.value);
+                  window.dispatchEvent(new Event('kasuro-business-changed'));
+                }}
+              >
+                {businesses.map((business) => (
+                  <option key={business.id} value={business.id}>
+                    {business.name}
+                  </option>
+                ))}
+              </select>
+            </label>
           </div>
           <div className="top-actions">
             <span className={online ? 'connection' : 'connection offline'}>
@@ -185,13 +266,30 @@ function Layout({ children }: { children: React.ReactNode }) {
 
 function RequireAuth({ children }: { children: React.ReactNode }) {
   const navigate = useNavigate();
+  const location = useLocation();
   const [state, setState] = useState<'checking' | 'authenticated'>('checking');
   useEffect(() => {
+    let cancelled = false;
     void api('/api/v1/auth/me')
       .then(() => bootstrapCsrf())
-      .then(() => setState('authenticated'))
-      .catch(() => navigate('/login', { replace: true }));
-  }, [navigate]);
+      .then(async () => {
+        if (location.pathname === '/setup') return;
+        const businesses = await api<Business[]>('/api/v1/businesses');
+        const businessId = readActiveBusinessId(businesses);
+        if (!businessId) return;
+        const setup = await api<SetupState>(`/api/v1/businesses/${businessId}/setup`);
+        if (!setup.setup_completed_at && !cancelled) navigate('/setup', { replace: true });
+      })
+      .then(() => {
+        if (!cancelled) setState('authenticated');
+      })
+      .catch(() => {
+        if (!cancelled) navigate('/login', { replace: true });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [location.pathname, navigate]);
   if (state !== 'authenticated')
     return (
       <main className="not-found">
@@ -221,106 +319,406 @@ function RequireAdmin({ children }: { children: React.ReactNode }) {
 
 function Setup() {
   const navigate = useNavigate();
+  const [businessId, setBusinessId] = useState('');
+  const [step, setStep] = useState<SetupState['setup_step']>('business');
+  const [loading, setLoading] = useState(true);
+  const [outletCount, setOutletCount] = useState(0);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+  const [success, setSuccess] = useState('');
   const [businessName, setBusinessName] = useState('');
   const [businessSlug, setBusinessSlug] = useState('');
   const [outletName, setOutletName] = useState('');
   const [outletCode, setOutletCode] = useState('');
-  const [error, setError] = useState('');
-  const [saving, setSaving] = useState(false);
+  const [taxMode, setTaxMode] = useState<'exclusive' | 'inclusive'>('exclusive');
+  const [taxRate, setTaxRate] = useState('0');
+  const [stockPolicy, setStockPolicy] = useState<'prevent_negative' | 'allow_negative'>(
+    'prevent_negative',
+  );
+  const [product, setProduct] = useState({ name: '', sku: '', price_minor: '', cost_minor: '' });
+  const [inviteEmail, setInviteEmail] = useState('');
+  const [inviteRole, setInviteRole] = useState('cashier');
+  const loadSetup = async (id: string) => {
+    const state = await api<SetupState>(`/api/v1/businesses/${id}/setup`);
+    setBusinessId(id);
+    setStep(state.setup_completed_at ? 'complete' : state.setup_step);
+    setBusinessName(state.name);
+    setBusinessSlug(state.slug);
+    setOutletCount(state.outlet_count);
+  };
+  useEffect(() => {
+    void api<Business[]>('/api/v1/businesses')
+      .then(async (items) => {
+        const id = readActiveBusinessId(items);
+        if (id) await loadSetup(id);
+      })
+      .catch((err: Error) => setError(err.message))
+      .finally(() => setLoading(false));
+  }, []);
+  const checkpoint = async (
+    nextStep: SetupState['setup_step'],
+    payload: Record<string, unknown> = {},
+  ) => {
+    if (!businessId) return;
+    await api(`/api/v1/businesses/${businessId}/setup`, {
+      method: 'PATCH',
+      headers: { 'X-CSRF-Token': getCsrf() },
+      body: JSON.stringify({ setup_step: nextStep, ...payload }),
+    });
+    setStep(nextStep);
+    setSuccess('Langkah tersimpan. Kamu bisa lanjut kapan saja.');
+  };
   const submit = async (event: React.FormEvent) => {
     event.preventDefault();
     setSaving(true);
     setError('');
+    setSuccess('');
     try {
-      const business = await api<{ id: string }>('/api/v1/businesses', {
-        method: 'POST',
-        headers: { 'X-CSRF-Token': getCsrf() },
-        body: JSON.stringify({ name: businessName, slug: businessSlug }),
-      });
-      await api(`/api/v1/businesses/${business.id}/outlets`, {
-        method: 'POST',
-        headers: { 'X-CSRF-Token': getCsrf() },
-        body: JSON.stringify({ name: outletName, code: outletCode }),
-      });
-      await api(`/api/v1/businesses/${business.id}/setup`, {
-        method: 'PATCH',
-        headers: { 'X-CSRF-Token': getCsrf() },
-        body: JSON.stringify({ setup_step: 'products' }),
-      });
-      navigate('/app/dashboard', { replace: true });
+      if (step === 'business') {
+        if (!businessId) {
+          const business = await api<{ id: string }>('/api/v1/businesses', {
+            method: 'POST',
+            headers: { 'X-CSRF-Token': getCsrf() },
+            body: JSON.stringify({ name: businessName, slug: businessSlug }),
+          });
+          setBusinessId(business.id);
+          localStorage.setItem(ACTIVE_BUSINESS_KEY, business.id);
+          await api(`/api/v1/businesses/${business.id}/setup`, {
+            method: 'PATCH',
+            headers: { 'X-CSRF-Token': getCsrf() },
+            body: JSON.stringify({ setup_step: 'outlet' }),
+          });
+          setStep('outlet');
+          setSuccess('Ruang kerja dibuat. Tambahkan outlet pertama.');
+        } else {
+          await checkpoint('outlet');
+        }
+      } else if (step === 'outlet') {
+        if (outletCount === 0) {
+          await api(`/api/v1/businesses/${businessId}/outlets`, {
+            method: 'POST',
+            headers: { 'X-CSRF-Token': getCsrf() },
+            body: JSON.stringify({ name: outletName, code: outletCode }),
+          });
+          setOutletCount(1);
+        }
+        await checkpoint('outlet');
+        await checkpoint('configure');
+      } else if (step === 'configure') {
+        await checkpoint('products', {
+          tax_mode: taxMode,
+          default_tax_rate_bp: taxRate,
+          stock_policy: stockPolicy,
+          enabled_payment_methods: ['cash', 'transfer', 'qris'],
+        });
+      } else if (step === 'products') {
+        if (product.name.trim()) {
+          if (!product.sku.trim() || !product.price_minor || !product.cost_minor)
+            throw new Error('Lengkapi nama, SKU, harga jual, dan harga modal produk.');
+          await api(`/api/v1/businesses/${businessId}/products`, {
+            method: 'POST',
+            headers: { 'X-CSRF-Token': getCsrf() },
+            body: JSON.stringify({
+              ...product,
+              sku: product.sku.toUpperCase(),
+              label: 'Default',
+              unit_key: 'pcs',
+            }),
+          });
+        }
+        await checkpoint('staff');
+      } else if (step === 'staff') {
+        if (inviteEmail.trim()) {
+          await api(`/api/v1/businesses/${businessId}/staff/invitations`, {
+            method: 'POST',
+            headers: { 'X-CSRF-Token': getCsrf() },
+            body: JSON.stringify({ email: inviteEmail.trim(), role_key: inviteRole }),
+          });
+        }
+        await checkpoint('first-sale');
+      } else if (step === 'first-sale') {
+        await checkpoint('complete', { completed: true });
+        navigate('/app/pos', { replace: true });
+      } else if (step === 'complete') {
+        navigate('/app/dashboard', { replace: true });
+      }
     } catch (err) {
       setError((err as Error).message);
     } finally {
       setSaving(false);
     }
   };
+  const canSkip = step === 'products' || step === 'staff' || step === 'first-sale';
+  const skip = async () => {
+    if (!canSkip) return;
+    setError('');
+    setSuccess('');
+    setSaving(true);
+    try {
+      const next: Record<'products' | 'staff' | 'first-sale', SetupState['setup_step']> = {
+        products: 'staff',
+        staff: 'first-sale',
+        'first-sale': 'complete',
+      };
+      await checkpoint(next[step], step === 'first-sale' ? { completed: true } : {});
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setSaving(false);
+    }
+  };
+  if (loading)
+    return (
+      <main className="not-found">
+        <p>Memuat progres setup…</p>
+      </main>
+    );
+  if (step === 'complete')
+    return (
+      <main className="auth-page">
+        <Link className="brand" to="/app/dashboard">
+          KASU<span>RO</span>
+        </Link>
+        <section className="auth-card setup-card setup-complete">
+          <span className="workspace-kicker">SETUP SELESAI</span>
+          <h1>Ruang kerja siap dipakai.</h1>
+          <p className="form-intro">
+            Bisnis, outlet, dan akses dasar sudah tersimpan. Sekarang lanjut ke operasional.
+          </p>
+          <button className="button" onClick={() => navigate('/app/dashboard')} type="button">
+            Masuk ke dashboard
+          </button>
+        </section>
+      </main>
+    );
+  const stepIndex = ['business', 'outlet', 'configure', 'products', 'staff', 'first-sale'].indexOf(
+    step,
+  );
+  const titles: Record<SetupState['setup_step'], [string, string]> = {
+    business: [
+      'Siapkan ruang kerja.',
+      'Mulai dari nama bisnis dan alamat pendek untuk ruang kerja.',
+    ],
+    outlet: ['Tambahkan outlet pertama.', 'Transaksi dan stok akan selalu terikat ke outlet.'],
+    configure: [
+      'Tetapkan aturan dasar.',
+      'Pilih cara pajak dan perilaku stok yang sesuai operasionalmu.',
+    ],
+    products: [
+      'Masukkan produk pertama.',
+      'Satu produk cukup untuk mencoba alur kasir. Kamu juga bisa melewati langkah ini.',
+    ],
+    staff: ['Siapkan tim.', 'Undang kasir atau staf inventori sekarang, atau lanjutkan sendiri.'],
+    'first-sale': [
+      'Coba transaksi pertama.',
+      'Buka kasir setelah setup selesai untuk membuat penjualan pertamamu.',
+    ],
+    complete: ['Ruang kerja siap dipakai.', 'Setup selesai.'],
+  };
   return (
     <main className="auth-page">
       <Link className="brand" to="/">
         KASU<span>RO</span>
       </Link>
-      <form className="auth-card setup-card" onSubmit={submit}>
-        <span className="workspace-kicker">LANGKAH 1 — RUANG KERJA</span>
-        <h1>Siapkan toko pertama.</h1>
-        <p className="form-intro">Buat konteks bisnis dan outlet sebelum transaksi pertama.</p>
-        <label>
-          Nama bisnis
-          <div className="input-wrap">
-            <input
-              required
-              maxLength={120}
-              value={businessName}
-              onChange={(event) => {
-                setBusinessName(event.target.value);
-                setBusinessSlug(
-                  event.target.value
-                    .toLowerCase()
-                    .trim()
-                    .replace(/[^a-z0-9]+/g, '-')
-                    .replace(/^-|-$/g, ''),
-                );
+      <section className="setup-layout">
+        <aside className="setup-progress">
+          <span className="workspace-kicker">OWNER SETUP</span>
+          <strong>{stepIndex + 1} / 6</strong>
+          {['Bisnis', 'Outlet', 'Konfigurasi', 'Produk', 'Tim', 'Transaksi'].map((label, index) => (
+            <div className={index <= stepIndex ? 'setup-step active' : 'setup-step'} key={label}>
+              <b>0{index + 1}</b>
+              {label}
+            </div>
+          ))}
+        </aside>
+        <form className="auth-card setup-card" onSubmit={submit}>
+          <span className="workspace-kicker">LANGKAH {stepIndex + 1} / 6</span>
+          <h1>{titles[step][0]}</h1>
+          <p className="form-intro">{titles[step][1]}</p>
+          {step === 'business' && (
+            <>
+              <label>
+                Nama bisnis
+                <input
+                  required
+                  maxLength={120}
+                  value={businessName}
+                  onChange={(event) => {
+                    setBusinessName(event.target.value);
+                    setBusinessSlug(
+                      event.target.value
+                        .toLowerCase()
+                        .trim()
+                        .replace(/[^a-z0-9]+/g, '-')
+                        .replace(/^-|-$/g, ''),
+                    );
+                  }}
+                />
+              </label>
+              <label>
+                Slug bisnis
+                <input
+                  required
+                  pattern="[a-z0-9]+(?:-[a-z0-9]+)*"
+                  value={businessSlug}
+                  onChange={(event) => setBusinessSlug(event.target.value.toLowerCase())}
+                />
+              </label>
+            </>
+          )}
+          {step === 'outlet' && (
+            <>
+              <label>
+                Nama outlet
+                <input
+                  required
+                  maxLength={120}
+                  value={outletName}
+                  onChange={(event) => setOutletName(event.target.value)}
+                  placeholder="Outlet utama"
+                />
+              </label>
+              <label>
+                Kode outlet
+                <input
+                  required
+                  maxLength={32}
+                  value={outletCode}
+                  onChange={(event) => setOutletCode(event.target.value.toUpperCase())}
+                  placeholder="UTAMA"
+                />
+              </label>
+            </>
+          )}
+          {step === 'configure' && (
+            <>
+              <label>
+                Mode pajak
+                <select
+                  value={taxMode}
+                  onChange={(event) => setTaxMode(event.target.value as typeof taxMode)}
+                >
+                  <option value="exclusive">Pajak di luar harga</option>
+                  <option value="inclusive">Pajak sudah termasuk</option>
+                </select>
+              </label>
+              <label>
+                Pajak default, basis poin
+                <input
+                  inputMode="numeric"
+                  value={taxRate}
+                  onChange={(event) => setTaxRate(event.target.value.replace(/\D/g, ''))}
+                />
+              </label>
+              <label>
+                Kebijakan stok
+                <select
+                  value={stockPolicy}
+                  onChange={(event) => setStockPolicy(event.target.value as typeof stockPolicy)}
+                >
+                  <option value="prevent_negative">Cegah stok negatif</option>
+                  <option value="allow_negative">Izinkan stok negatif</option>
+                </select>
+              </label>
+            </>
+          )}
+          {step === 'products' && (
+            <>
+              <label>
+                Nama produk
+                <input
+                  value={product.name}
+                  onChange={(event) => setProduct({ ...product, name: event.target.value })}
+                  placeholder="Nama produk"
+                />
+              </label>
+              <label>
+                SKU
+                <input
+                  value={product.sku}
+                  onChange={(event) => setProduct({ ...product, sku: event.target.value })}
+                  placeholder="SKU-001"
+                />
+              </label>
+              <label>
+                Harga jual
+                <input
+                  inputMode="numeric"
+                  value={product.price_minor}
+                  onChange={(event) =>
+                    setProduct({ ...product, price_minor: event.target.value.replace(/\D/g, '') })
+                  }
+                  placeholder="0"
+                />
+              </label>
+              <label>
+                Harga modal
+                <input
+                  inputMode="numeric"
+                  value={product.cost_minor}
+                  onChange={(event) =>
+                    setProduct({ ...product, cost_minor: event.target.value.replace(/\D/g, '') })
+                  }
+                  placeholder="0"
+                />
+              </label>
+            </>
+          )}
+          {step === 'staff' && (
+            <>
+              <label>
+                Email staf, opsional
+                <input
+                  type="email"
+                  value={inviteEmail}
+                  onChange={(event) => setInviteEmail(event.target.value)}
+                  placeholder="email@example.com"
+                />
+              </label>
+              <label>
+                Peran
+                <select value={inviteRole} onChange={(event) => setInviteRole(event.target.value)}>
+                  <option value="cashier">Kasir</option>
+                  <option value="inventory_staff">Staf inventori</option>
+                  <option value="manager">Manager</option>
+                </select>
+              </label>
+            </>
+          )}
+          {step === 'first-sale' && (
+            <div className="setup-next">
+              <strong>Berikutnya: kasir</strong>
+              <p>Setup akan selesai dan kamu bisa membuka POS untuk mencoba transaksi pertama.</p>
+            </div>
+          )}
+          {error && <Notice message={error} />}
+          {success && (
+            <div className="success-notice" role="status">
+              {success}
+            </div>
+          )}
+          <div className="form-actions">
+            <button
+              className="button secondary"
+              disabled={saving}
+              onClick={(event) => {
+                event.preventDefault();
+                void skip();
               }}
-            />
+              type="button"
+            >
+              Lewati
+            </button>
+            <button className="button" disabled={saving} type="submit">
+              {saving
+                ? 'Menyimpan…'
+                : step === 'first-sale'
+                  ? 'Selesaikan dan buka POS'
+                  : 'Lanjutkan'}
+            </button>
           </div>
-        </label>
-        <label>
-          Slug bisnis
-          <div className="input-wrap">
-            <input
-              required
-              pattern="[a-z0-9]+(?:-[a-z0-9]+)*"
-              value={businessSlug}
-              onChange={(event) => setBusinessSlug(event.target.value.toLowerCase())}
-            />
-          </div>
-        </label>
-        <label>
-          Nama outlet
-          <div className="input-wrap">
-            <input
-              required
-              maxLength={120}
-              value={outletName}
-              onChange={(event) => setOutletName(event.target.value)}
-            />
-          </div>
-        </label>
-        <label>
-          Kode outlet
-          <div className="input-wrap">
-            <input
-              required
-              maxLength={32}
-              value={outletCode}
-              onChange={(event) => setOutletCode(event.target.value.toUpperCase())}
-            />
-          </div>
-        </label>
-        {error && <Notice message={error} />}
-        <button className="button" disabled={saving} type="submit">
-          {saving ? 'Menyimpan…' : 'Buat ruang kerja'} <span>↗</span>
-        </button>
-      </form>
+        </form>
+      </section>
     </main>
   );
 }
@@ -432,7 +830,18 @@ function Pos() {
   const [message, setMessage] = useState('');
   const [busy, setBusy] = useState(false);
   const [paymentOpen, setPaymentOpen] = useState(false);
-  const [receivedCash, setReceivedCash] = useState('');
+  const [payments, setPayments] = useState<PaymentEntry[]>([]);
+  const [cashMovementOpen, setCashMovementOpen] = useState(false);
+  const [movementType, setMovementType] = useState<'cash_in' | 'cash_out'>('cash_in');
+  const [movementAmount, setMovementAmount] = useState('');
+  const [movementReason, setMovementReason] = useState('');
+  const [closeOpen, setCloseOpen] = useState(false);
+  const [actualCash, setActualCash] = useState('');
+  const [reconciliation, setReconciliation] = useState<{
+    expected_cash_minor: number;
+    actual_cash_minor: number;
+    difference_minor: number;
+  } | null>(null);
   const [completedSale, setCompletedSale] = useState<{
     receipt_number: string;
     total_minor: number;
@@ -442,8 +851,26 @@ function Pos() {
     Array<{ id: string; total_minor: number; created_at: string }>
   >([]);
   const [activeSaleId, setActiveSaleId] = useState<string | null>(null);
+  const searchRef = useRef<HTMLInputElement>(null);
   const businessId = businesses[0]?.id ?? '';
   const register = registers.find((item) => item.outlet_id === outletId);
+  const shiftIsOpen = shift?.status === 'open';
+  const grouped = useMemo(
+    () =>
+      cart.reduce<Record<string, number>>(
+        (counts, item) => ({ ...counts, [item.variant_id]: (counts[item.variant_id] ?? 0) + 1 }),
+        {},
+      ),
+    [cart],
+  );
+  const total = cart.reduce((sum, item) => sum + item.selling_price_minor, 0);
+  const paidTotal = payments.reduce((sum, payment) => sum + Number(payment.amount || 0), 0);
+  const cashPaid = Number(payments.find((payment) => payment.method === 'cash')?.amount || 0);
+  const nonCashPaid = payments
+    .filter((payment) => payment.method !== 'cash')
+    .reduce((sum, payment) => sum + Number(payment.amount || 0), 0);
+  const change = Math.max(0, cashPaid - Math.max(0, total - nonCashPaid));
+
   useEffect(() => {
     void api<Business[]>('/api/v1/businesses')
       .then(async (items) => {
@@ -494,15 +921,23 @@ function Pos() {
       .then(setShift)
       .catch((err: Error) => setMessage(err.message));
   }, [businessId, outletId]);
-  const total = cart.reduce((sum, item) => sum + item.selling_price_minor, 0);
-  const grouped = useMemo(
-    () =>
-      cart.reduce<Record<string, number>>(
-        (counts, item) => ({ ...counts, [item.variant_id]: (counts[item.variant_id] ?? 0) + 1 }),
-        {},
-      ),
-    [cart],
-  );
+  const openPayment = () => {
+    setPayments([
+      { id: crypto.randomUUID(), method: 'cash', amount: String(total), reference: '' },
+    ]);
+    setPaymentOpen(true);
+  };
+  const adjustQuantity = (variantId: string, delta: number) => {
+    setCart((current) => {
+      const item = current.find((entry) => entry.variant_id === variantId);
+      if (!item) return current;
+      if (delta < 0) {
+        const index = current.findIndex((entry) => entry.variant_id === variantId);
+        return current.filter((_, itemIndex) => itemIndex !== index);
+      }
+      return [...current, item];
+    });
+  };
   const openShift = async () => {
     if (!businessId || !outletId || !register) return;
     setBusy(true);
@@ -524,7 +959,7 @@ function Pos() {
       setBusy(false);
     }
   };
-  const complete = async (saleId: string | null, amount: number) => {
+  const complete = async (saleId: string | null, paymentRows: PaymentEntry[]) => {
     if (!businessId || !outletId || !register || !shift) return;
     const payload: OfflineSalePayload = {
       business_id: businessId,
@@ -533,8 +968,13 @@ function Pos() {
       shift_id: shift.id,
       client_transaction_id: crypto.randomUUID(),
       lines: Object.entries(grouped).map(([variant_id, quantity]) => ({ variant_id, quantity })),
-      payment: { method: 'cash', amount_minor: amount },
+      payment: { method: 'cash', amount_minor: Number(paymentRows[0]?.amount || 0) },
     };
+    const apiPayments = paymentRows.map((payment) => ({
+      method: payment.method,
+      amount_minor: Number(payment.amount),
+      ...(payment.reference.trim() ? { reference: payment.reference.trim() } : {}),
+    }));
     setBusy(true);
     try {
       const sale = saleId
@@ -543,27 +983,31 @@ function Pos() {
             {
               method: 'POST',
               headers: { 'X-CSRF-Token': getCsrf() },
-              body: JSON.stringify({ payments: [{ method: 'cash', amount_minor: amount }] }),
+              body: JSON.stringify({ payments: apiPayments }),
             },
           )
         : await api<typeof completedSale>(`/api/v1/businesses/${businessId}/sales`, {
             method: 'POST',
             headers: { 'X-CSRF-Token': getCsrf(), 'Idempotency-Key': crypto.randomUUID() },
-            body: JSON.stringify(payload),
+            body: JSON.stringify({ ...payload, payments: apiPayments }),
           });
       setCompletedSale(sale);
       setCart([]);
       setActiveSaleId(null);
       setPaymentOpen(false);
-      setReceivedCash('');
+      setPayments([]);
       setHeldSales((current) => current.filter((held) => held.id !== saleId));
     } catch (err) {
-      if (!saleId && !navigator.onLine) {
+      if (
+        !saleId &&
+        !navigator.onLine &&
+        paymentRows.every((payment) => payment.method === 'cash')
+      ) {
         await queueOfflineSale(payload, 'Menunggu koneksi untuk sinkronisasi');
         window.dispatchEvent(new Event('kasuro-offline-queue-changed'));
         setCart([]);
         setPaymentOpen(false);
-        setReceivedCash('');
+        setPayments([]);
         setMessage(
           'Transaksi tunai disimpan sebagai provisional dan akan disinkronkan saat online.',
         );
@@ -635,6 +1079,80 @@ function Pos() {
       setBusy(false);
     }
   };
+  const addCashMovement = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!businessId || !shift) return;
+    setBusy(true);
+    try {
+      await api(`/api/v1/businesses/${businessId}/shifts/${shift.id}/cash-movements`, {
+        method: 'POST',
+        headers: { 'X-CSRF-Token': getCsrf() },
+        body: JSON.stringify({
+          movement_type: movementType,
+          amount_minor: Number(movementAmount),
+          reason: movementReason,
+        }),
+      });
+      setCashMovementOpen(false);
+      setMovementAmount('');
+      setMovementReason('');
+      setMessage('Pergerakan kas dicatat.');
+    } catch (err) {
+      setMessage((err as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  const closeShift = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!businessId || !shift) return;
+    setBusy(true);
+    try {
+      if (shift.status === 'open') {
+        await api(`/api/v1/businesses/${businessId}/shifts/${shift.id}/close/begin`, {
+          method: 'POST',
+          headers: { 'X-CSRF-Token': getCsrf() },
+        });
+        setShift({ ...shift, status: 'closing' });
+      }
+      const result = await api<typeof reconciliation>(
+        `/api/v1/businesses/${businessId}/shifts/${shift.id}/close`,
+        {
+          method: 'POST',
+          headers: { 'X-CSRF-Token': getCsrf() },
+          body: JSON.stringify({ actual_cash_minor: Number(actualCash) }),
+        },
+      );
+      setReconciliation(result);
+      setShift(null);
+      setCloseOpen(false);
+      setActualCash('');
+      setMessage('Shift ditutup. Rekonsiliasi kas tersedia.');
+    } catch (err) {
+      setMessage((err as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'F2') {
+        event.preventDefault();
+        searchRef.current?.focus();
+      }
+      if (event.key === 'F4' && shiftIsOpen && cart.length) {
+        event.preventDefault();
+        openPayment();
+      }
+      if (event.key === 'F8' && shiftIsOpen && cart.length) {
+        event.preventDefault();
+        void hold();
+      }
+      if (event.key === 'Escape') setPaymentOpen(false);
+    };
+    addEventListener('keydown', onKeyDown);
+    return () => removeEventListener('keydown', onKeyDown);
+  });
   return (
     <Layout>
       <section className="pos-heading">
@@ -642,7 +1160,13 @@ function Pos() {
           <span className="workspace-kicker">KASIR</span>
           <h1>Siap melayani.</h1>
         </div>
-        <span className="shift-pill">{shift ? '● Shift terbuka' : '● Shift belum dibuka'}</span>
+        <span className="shift-pill">
+          {shiftIsOpen
+            ? 'Shift terbuka'
+            : shift?.status === 'closing'
+              ? 'Shift ditutup sementara'
+              : 'Shift belum dibuka'}
+        </span>
       </section>
       {message && <Notice message={message} />}
       {completedSale && (
@@ -662,6 +1186,18 @@ function Pos() {
               Tutup
             </button>
           </div>
+        </section>
+      )}
+      {reconciliation && (
+        <section className="reconciliation-panel">
+          <div>
+            <span className="workspace-kicker">REKONSILIASI SHIFT</span>
+            <strong>Selisih {money(reconciliation.difference_minor)}</strong>
+          </div>
+          <span>
+            Ekspektasi {money(reconciliation.expected_cash_minor)} · Aktual{' '}
+            {money(reconciliation.actual_cash_minor)}
+          </span>
         </section>
       )}
       <section className="pos-layout">
@@ -688,14 +1224,12 @@ function Pos() {
             {!shift && (
               <label htmlFor="opening-cash">
                 Kas awal
-                <div className="input-wrap">
-                  <input
-                    id="opening-cash"
-                    inputMode="numeric"
-                    value={openingCash}
-                    onChange={(event) => setOpeningCash(event.target.value.replace(/\D/g, ''))}
-                  />
-                </div>
+                <input
+                  id="opening-cash"
+                  inputMode="numeric"
+                  value={openingCash}
+                  onChange={(event) => setOpeningCash(event.target.value.replace(/\D/g, ''))}
+                />
               </label>
             )}
             {!shift && (
@@ -707,10 +1241,31 @@ function Pos() {
                 Buka shift
               </button>
             )}
+            {shift && (
+              <div className="shift-actions">
+                <button
+                  className="button secondary small"
+                  disabled={busy || !shiftIsOpen}
+                  onClick={() => setCashMovementOpen(true)}
+                >
+                  Kas masuk / keluar
+                </button>
+                <button
+                  className="button small"
+                  disabled={busy || !!cart.length}
+                  onClick={() => setCloseOpen(true)}
+                >
+                  Tutup shift
+                </button>
+              </div>
+            )}
           </div>
           <div className="search-wrap">
-            <label htmlFor="product-search">Cari produk</label>
+            <label htmlFor="product-search">
+              Cari produk <span className="shortcut-hint">F2</span>
+            </label>
             <input
+              ref={searchRef}
               id="product-search"
               autoFocus
               value={query}
@@ -723,7 +1278,7 @@ function Pos() {
               <button
                 className="product-tile"
                 key={product.variant_id}
-                disabled={!shift || busy}
+                disabled={!shiftIsOpen || busy}
                 onClick={() => setCart([...cart, product])}
               >
                 <span className="tile-index">{product.sku}</span>
@@ -791,11 +1346,26 @@ function Pos() {
                   <div className="cart-line" key={variantId}>
                     <span>
                       <strong>{item.name}</strong>
-                      <small>
-                        {quantity} × {money(item.selling_price_minor)}
-                      </small>
+                      <small>{money(item.selling_price_minor)} per item</small>
                     </span>
-                    <b>{money(item.selling_price_minor * quantity)}</b>
+                    <div className="cart-line-controls">
+                      <button
+                        type="button"
+                        aria-label={`Kurangi ${item.name}`}
+                        onClick={() => adjustQuantity(variantId, -1)}
+                      >
+                        −
+                      </button>
+                      <b>{quantity}</b>
+                      <button
+                        type="button"
+                        aria-label={`Tambah ${item.name}`}
+                        onClick={() => adjustQuantity(variantId, 1)}
+                      >
+                        +
+                      </button>
+                      <strong>{money(item.selling_price_minor * quantity)}</strong>
+                    </div>
                   </div>
                 );
               })}
@@ -808,20 +1378,17 @@ function Pos() {
           <div className="cart-actions">
             <button
               className="button secondary"
-              disabled={!shift || !cart.length || busy}
+              disabled={!shiftIsOpen || !cart.length || busy}
               onClick={() => void hold()}
             >
-              Tahan
+              Tahan <span>F8</span>
             </button>
             <button
               className="button checkout"
-              disabled={!shift || !cart.length || busy}
-              onClick={() => {
-                setReceivedCash(String(total));
-                setPaymentOpen(true);
-              }}
+              disabled={!shiftIsOpen || !cart.length || busy}
+              onClick={openPayment}
             >
-              {busy ? 'Memproses…' : 'Bayar tunai'} <span>F4</span>
+              {busy ? 'Memproses...' : 'Bayar'} <span>F4</span>
             </button>
           </div>
         </aside>
@@ -832,40 +1399,190 @@ function Pos() {
             className="payment-modal"
             onSubmit={(event) => {
               event.preventDefault();
-              const amount = Number(receivedCash);
-              if (!Number.isSafeInteger(amount) || amount < total) {
-                setMessage('Uang diterima harus menutup total transaksi.');
+              if (
+                !payments.length ||
+                payments.some(
+                  (payment) =>
+                    !Number.isSafeInteger(Number(payment.amount)) || Number(payment.amount) <= 0,
+                ) ||
+                paidTotal < total ||
+                payments.some((payment) => payment.method !== 'cash' && !payment.reference.trim())
+              ) {
+                setMessage('Pembayaran harus menutup total dan referensi non-tunai wajib diisi.');
                 return;
               }
-              void complete(activeSaleId, amount);
+              void complete(activeSaleId, payments);
             }}
           >
             <div className="panel-header">
               <div>
-                <span className="workspace-kicker">PEMBAYARAN TUNAI</span>
+                <span className="workspace-kicker">PEMBAYARAN</span>
                 <h2>{money(total)}</h2>
               </div>
               <button type="button" className="text-button" onClick={() => setPaymentOpen(false)}>
                 Tutup
               </button>
             </div>
-            <label htmlFor="received-cash">
-              Uang diterima
-              <input
-                id="received-cash"
-                autoFocus
-                required
-                inputMode="numeric"
-                value={receivedCash}
-                onChange={(event) => setReceivedCash(event.target.value.replace(/\D/g, ''))}
-              />
-            </label>
+            {payments.map((payment) => (
+              <div className="payment-entry" key={payment.id}>
+                <select
+                  aria-label="Metode pembayaran"
+                  value={payment.method}
+                  onChange={(event) =>
+                    setPayments((current) =>
+                      current.map((row) =>
+                        row.id === payment.id
+                          ? { ...row, method: event.target.value as PaymentMethod }
+                          : row,
+                      ),
+                    )
+                  }
+                >
+                  <option value="cash">Tunai</option>
+                  <option value="transfer">Transfer</option>
+                  <option value="qris">QRIS</option>
+                </select>
+                <input
+                  aria-label="Nominal pembayaran"
+                  inputMode="numeric"
+                  value={payment.amount}
+                  onChange={(event) =>
+                    setPayments((current) =>
+                      current.map((row) =>
+                        row.id === payment.id
+                          ? { ...row, amount: event.target.value.replace(/\D/g, '') }
+                          : row,
+                      ),
+                    )
+                  }
+                />
+                <input
+                  aria-label="Referensi pembayaran"
+                  placeholder="Referensi untuk non-tunai"
+                  value={payment.reference}
+                  onChange={(event) =>
+                    setPayments((current) =>
+                      current.map((row) =>
+                        row.id === payment.id ? { ...row, reference: event.target.value } : row,
+                      ),
+                    )
+                  }
+                />
+                <button
+                  type="button"
+                  className="text-button"
+                  disabled={payments.length === 1}
+                  onClick={() =>
+                    setPayments((current) => current.filter((row) => row.id !== payment.id))
+                  }
+                >
+                  Hapus
+                </button>
+              </div>
+            ))}
+            <div className="payment-methods">
+              <button
+                type="button"
+                className="button secondary small"
+                onClick={() =>
+                  setPayments((current) => [
+                    ...current,
+                    { id: crypto.randomUUID(), method: 'transfer', amount: '', reference: '' },
+                  ])
+                }
+              >
+                Tambah transfer
+              </button>
+              <button
+                type="button"
+                className="button secondary small"
+                onClick={() =>
+                  setPayments((current) => [
+                    ...current,
+                    { id: crypto.randomUUID(), method: 'qris', amount: '', reference: '' },
+                  ])
+                }
+              >
+                Tambah QRIS
+              </button>
+            </div>
             <div className="payment-change">
-              <span>Kembalian</span>
-              <strong>{money(Math.max(0, Number(receivedCash || 0) - total))}</strong>
+              <span>Dibayar {money(paidTotal)} · Kembalian</span>
+              <strong>{money(change)}</strong>
             </div>
             <button className="button" disabled={busy} type="submit">
-              {busy ? 'Memproses…' : 'Selesaikan transaksi ↗'}
+              {busy ? 'Memproses...' : 'Selesaikan transaksi'}
+            </button>
+          </form>
+        </div>
+      )}
+      {cashMovementOpen && (
+        <div className="modal-backdrop" role="presentation">
+          <form className="payment-modal" onSubmit={(event) => void addCashMovement(event)}>
+            <div className="panel-header">
+              <h2>Pergerakan kas</h2>
+              <button
+                type="button"
+                className="text-button"
+                onClick={() => setCashMovementOpen(false)}
+              >
+                Tutup
+              </button>
+            </div>
+            <label>
+              Jenis
+              <select
+                value={movementType}
+                onChange={(event) => setMovementType(event.target.value as 'cash_in' | 'cash_out')}
+              >
+                <option value="cash_in">Kas masuk</option>
+                <option value="cash_out">Kas keluar</option>
+              </select>
+            </label>
+            <label>
+              Nominal
+              <input
+                required
+                inputMode="numeric"
+                value={movementAmount}
+                onChange={(event) => setMovementAmount(event.target.value.replace(/\D/g, ''))}
+              />
+            </label>
+            <label>
+              Alasan
+              <input
+                required
+                value={movementReason}
+                onChange={(event) => setMovementReason(event.target.value)}
+              />
+            </label>
+            <button className="button" disabled={busy} type="submit">
+              Simpan pergerakan
+            </button>
+          </form>
+        </div>
+      )}
+      {closeOpen && (
+        <div className="modal-backdrop" role="presentation">
+          <form className="payment-modal" onSubmit={(event) => void closeShift(event)}>
+            <div className="panel-header">
+              <h2>Tutup shift</h2>
+              <button type="button" className="text-button" onClick={() => setCloseOpen(false)}>
+                Batal
+              </button>
+            </div>
+            <p>Hitung uang tunai di laci sebelum menutup shift.</p>
+            <label>
+              Kas aktual
+              <input
+                required
+                inputMode="numeric"
+                value={actualCash}
+                onChange={(event) => setActualCash(event.target.value.replace(/\D/g, ''))}
+              />
+            </label>
+            <button className="button" disabled={busy} type="submit">
+              Tutup dan rekonsiliasi
             </button>
           </form>
         </div>
@@ -875,62 +1592,280 @@ function Pos() {
 }
 
 function Products() {
+  type CatalogRow = Product & {
+    id: string;
+    barcode: string | null;
+    variant_sku: string;
+    variant_barcode: string | null;
+    category_name: string | null;
+    brand_name: string | null;
+    category_id: string | null;
+    brand_id: string | null;
+    description: string | null;
+    unit_key: string;
+    cost_minor: number;
+    variant_cost_minor: number;
+    tax_rate_bp: number;
+    reorder_level: number;
+    status: 'active' | 'archived';
+  };
+  type Detail = CatalogRow & {
+    variants: Array<{
+      id: string;
+      label: string;
+      sku: string;
+      barcode: string | null;
+      price_minor: number | null;
+      cost_minor: number | null;
+      status: 'active' | 'archived';
+    }>;
+  };
+  type Option = { id: string; name: string };
   const [businesses, setBusinesses] = useState<Business[]>([]);
-  const [products, setProducts] = useState<Product[]>([]);
+  const [products, setProducts] = useState<CatalogRow[]>([]);
+  const [options, setOptions] = useState<{ categories: Option[]; brands: Option[] }>({
+    categories: [],
+    brands: [],
+  });
+  const [selected, setSelected] = useState<Detail | null>(null);
+  const [query, setQuery] = useState('');
+  const [includeArchived, setIncludeArchived] = useState(false);
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [success, setSuccess] = useState('');
+  const businessId = readActiveBusinessId(businesses);
+  const load = async (id: string, search = query, archived = includeArchived) => {
+    setLoading(true);
+    setError('');
+    try {
+      const params = new URLSearchParams();
+      if (search.trim()) params.set('q', search.trim());
+      if (archived) params.set('include_archived', '1');
+      const [rows, catalogOptions] = await Promise.all([
+        api<CatalogRow[]>(`/api/v1/businesses/${id}/products?${params}`),
+        api<{ categories: Option[]; brands: Option[] }>(`/api/v1/businesses/${id}/catalog-options`),
+      ]);
+      setProducts(rows);
+      setOptions(catalogOptions);
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setLoading(false);
+    }
+  };
   useEffect(() => {
     void api<Business[]>('/api/v1/businesses')
       .then((items) => {
         setBusinesses(items);
-        if (items[0]) return api<Product[]>(`/api/v1/businesses/${items[0].id}/products`);
-        return [];
+        const id = readActiveBusinessId(items);
+        if (id) void load(id);
+        else setLoading(false);
       })
-      .then(setProducts)
-      .catch((err: Error) => setError(err.message));
+      .catch((err: Error) => {
+        setError(err.message);
+        setLoading(false);
+      });
   }, []);
+  const openDetail = async (productId: string) => {
+    if (!businessId) return;
+    setError('');
+    try {
+      setSelected(await api<Detail>(`/api/v1/businesses/${businessId}/products/${productId}`));
+    } catch (err) {
+      setError((err as Error).message);
+    }
+  };
+  const archiveProduct = async () => {
+    if (!businessId || !selected) return;
+    try {
+      await api(`/api/v1/businesses/${businessId}/products/${selected.id}`, {
+        method: 'PATCH',
+        headers: { 'X-CSRF-Token': getCsrf() },
+        body: JSON.stringify({ status: selected.status === 'archived' ? 'active' : 'archived' }),
+      });
+      setSuccess(selected.status === 'archived' ? 'Produk dipulihkan.' : 'Produk diarsipkan.');
+      setSelected(null);
+      await load(businessId);
+    } catch (err) {
+      setError((err as Error).message);
+    }
+  };
+  const toggleVariant = async (variant: Detail['variants'][number]) => {
+    if (!businessId || !selected) return;
+    try {
+      await api(`/api/v1/businesses/${businessId}/products/${selected.id}/variants/${variant.id}`, {
+        method: 'PATCH',
+        headers: { 'X-CSRF-Token': getCsrf() },
+        body: JSON.stringify({ status: variant.status === 'archived' ? 'active' : 'archived' }),
+      });
+      await openDetail(selected.id);
+      setSuccess(variant.status === 'archived' ? 'Varian dipulihkan.' : 'Varian diarsipkan.');
+    } catch (err) {
+      setError((err as Error).message);
+    }
+  };
   return (
     <Layout>
       <section className="page-heading">
         <div>
           <span className="workspace-kicker">KATALOG</span>
           <h1>Produk yang siap dijual.</h1>
-          <p>
-            {businesses[0]
-              ? 'Harga, SKU, dan varian yang sedang aktif.'
-              : 'Hubungkan ruang kerja untuk memuat katalog.'}
-          </p>
+          <p>Kelola identitas produk, varian, harga, dan status katalog dalam satu ruang kerja.</p>
         </div>
         <div className="heading-actions">
           <Link className="button" to="/app/products/new">
             Tambah produk
           </Link>
-          <span className="panel-label">{products.length} VARIAN</span>
+          <span className="panel-label">{products.length} BARIS</span>
         </div>
       </section>
-      {error ? (
-        <Notice message={error} />
+      {error && <Notice message={error} />}
+      {success && (
+        <div className="success-notice inline-notice" role="status">
+          {success}
+        </div>
+      )}
+      <section className="catalog-toolbar" aria-label="Filter katalog">
+        <form
+          className="catalog-search"
+          onSubmit={(event) => {
+            event.preventDefault();
+            if (businessId) void load(businessId);
+          }}
+        >
+          <label htmlFor="catalog-search">Cari nama, SKU, atau barcode</label>
+          <div>
+            <input
+              id="catalog-search"
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+              placeholder="Contoh: kopi atau SKU-001"
+            />
+            <button className="button" type="submit">
+              Cari
+            </button>
+          </div>
+        </form>
+        <label className="catalog-toggle">
+          <input
+            type="checkbox"
+            checked={includeArchived}
+            onChange={(event) => {
+              setIncludeArchived(event.target.checked);
+              if (businessId) void load(businessId, query, event.target.checked);
+            }}
+          />{' '}
+          Tampilkan arsip
+        </label>
+      </section>
+      {loading ? (
+        <div className="state-card catalog-state" role="status">
+          Memuat katalog...
+        </div>
       ) : products.length ? (
-        <div className="data-list">
+        <div className="data-list catalog-list">
           {products.map((product) => (
-            <article className="data-row" key={product.variant_id}>
+            <button
+              className="data-row product-row"
+              key={product.variant_id}
+              type="button"
+              onClick={() => void openDetail(product.id)}
+            >
               <span>
                 <strong>{product.name}</strong>
                 <small>
-                  {product.variant_label} · {product.sku}
+                  {product.variant_label} · {product.variant_sku} ·{' '}
+                  {product.category_name ?? 'Tanpa kategori'}
+                  {product.status === 'archived' ? ' · Diarsipkan' : ''}
                 </small>
               </span>
               <b>{money(product.selling_price_minor)}</b>
-            </article>
+            </button>
           ))}
         </div>
       ) : (
         <div className="empty-panel">
-          <span className="empty-number">—</span>
-          <h2>Katalog belum berisi produk.</h2>
-          <p>Tambahkan produk pertama untuk mulai mengisi stok dan berjualan.</p>
+          <span className="empty-number">0</span>
+          <h2>{query ? 'Produk tidak ditemukan.' : 'Katalog belum berisi produk.'}</h2>
+          <p>
+            {query
+              ? 'Coba kata kunci lain atau tampilkan produk arsip.'
+              : 'Tambahkan produk pertama untuk mulai mengisi stok dan berjualan.'}
+          </p>
           <Link className="button" to="/app/products/new">
             Buat produk pertama
           </Link>
+        </div>
+      )}
+      {options.categories.length + options.brands.length > 0 && (
+        <p className="catalog-option-summary">
+          {options.categories.length} kategori · {options.brands.length} brand aktif
+        </p>
+      )}
+      {selected && (
+        <div className="modal-backdrop" role="presentation">
+          <section
+            className="panel catalog-detail"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="catalog-detail-title"
+          >
+            <div className="panel-header">
+              <div>
+                <span className="workspace-kicker">DETAIL KATALOG</span>
+                <h2 id="catalog-detail-title">{selected.name}</h2>
+              </div>
+              <button className="text-button dark" type="button" onClick={() => setSelected(null)}>
+                Tutup
+              </button>
+            </div>
+            <p className="muted-copy">
+              {selected.sku} · {selected.category_name ?? 'Tanpa kategori'} ·{' '}
+              {selected.brand_name ?? 'Tanpa brand'} · {selected.status}
+            </p>
+            <div className="metric-grid catalog-metrics">
+              <Metric label="Harga jual" value={money(selected.selling_price_minor)} />
+              <Metric label="Modal" value={money(selected.variant_cost_minor)} />
+              <Metric label="Pajak" value={`${selected.tax_rate_bp / 100}%`} />
+              <Metric label="Titik pesan" value={`${selected.reorder_level} unit`} />
+            </div>
+            <div className="panel-header catalog-variants-heading">
+              <h3>Varian</h3>
+              <span className="panel-label">{selected.variants.length} VARIAN</span>
+            </div>
+            <div className="mini-list">
+              {selected.variants.map((variant) => (
+                <div className="mini-row" key={variant.id}>
+                  <span>
+                    <strong>{variant.label}</strong>
+                    <small>
+                      {variant.sku} · {variant.status} ·{' '}
+                      {money(variant.price_minor ?? selected.price_minor)}
+                    </small>
+                  </span>
+                  <button
+                    className="text-button dark"
+                    type="button"
+                    onClick={() => void toggleVariant(variant)}
+                  >
+                    {variant.status === 'archived' ? 'Pulihkan' : 'Arsipkan'}
+                  </button>
+                </div>
+              ))}
+            </div>
+            <div className="form-actions">
+              <button
+                className="button secondary"
+                type="button"
+                onClick={() => void archiveProduct()}
+              >
+                {selected.status === 'archived' ? 'Pulihkan produk' : 'Arsipkan produk'}
+              </button>
+              <Link className="button" to={`/app/products/${selected.id}/edit`}>
+                Edit detail
+              </Link>
+            </div>
+          </section>
         </div>
       )}
     </Layout>
@@ -938,29 +1873,75 @@ function Products() {
 }
 
 function ProductCreate() {
+  type Option = { id: string; name: string };
   const navigate = useNavigate();
+  const [businesses, setBusinesses] = useState<Business[]>([]);
+  const [options, setOptions] = useState<{ categories: Option[]; brands: Option[] }>({
+    categories: [],
+    brands: [],
+  });
   const [form, setForm] = useState({
     name: '',
     sku: '',
     barcode: '',
+    description: '',
     unit_key: 'pcs',
     price_minor: '',
     cost_minor: '',
     tax_rate_bp: '0',
+    reorder_level: '0',
+    category_id: '',
+    brand_id: '',
     label: 'Default',
   });
+  const [optionType, setOptionType] = useState<'category' | 'brand'>('category');
+  const [optionName, setOptionName] = useState('');
   const [error, setError] = useState('');
   const [saving, setSaving] = useState(false);
   const update = (key: keyof typeof form, value: string) =>
     setForm((current) => ({ ...current, [key]: value }));
+  useEffect(() => {
+    void api<Business[]>('/api/v1/businesses')
+      .then((items) => {
+        setBusinesses(items);
+        const id = readActiveBusinessId(items);
+        if (id)
+          return api<typeof options>(`/api/v1/businesses/${id}/catalog-options`).then(setOptions);
+      })
+      .catch((err: Error) => setError(err.message));
+  }, []);
+  const businessId = readActiveBusinessId(businesses);
+  const createOption = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!businessId || !optionName.trim()) return;
+    try {
+      const created = await api<Option & { type: string }>(
+        `/api/v1/businesses/${businessId}/catalog-options`,
+        {
+          method: 'POST',
+          headers: { 'X-CSRF-Token': getCsrf() },
+          body: JSON.stringify({ type: optionType, name: optionName }),
+        },
+      );
+      setOptions((current) => ({
+        ...current,
+        [optionType === 'category' ? 'categories' : 'brands']: [
+          ...current[optionType === 'category' ? 'categories' : 'brands'],
+          created,
+        ],
+      }));
+      update(optionType === 'category' ? 'category_id' : 'brand_id', created.id);
+      setOptionName('');
+    } catch (err) {
+      setError((err as Error).message);
+    }
+  };
   const submit = async (event: React.FormEvent) => {
     event.preventDefault();
+    if (!businessId) return;
     setSaving(true);
     setError('');
     try {
-      const businesses = await api<Business[]>('/api/v1/businesses');
-      const businessId = businesses[0]?.id;
-      if (!businessId) throw new Error('Buat ruang kerja terlebih dahulu');
       await api(`/api/v1/businesses/${businessId}/products`, {
         method: 'POST',
         headers: { 'X-CSRF-Token': getCsrf() },
@@ -979,7 +1960,273 @@ function ProductCreate() {
         <div>
           <span className="workspace-kicker">KATALOG / PRODUK BARU</span>
           <h1>Tambahkan produk.</h1>
-          <p>Harga dan modal disimpan sebagai snapshot untuk transaksi berikutnya.</p>
+          <p>Identitas dan harga dasar menjadi sumber data untuk stok, pembelian, dan kasir.</p>
+        </div>
+        <Link className="button secondary" to="/app/products">
+          Batal
+        </Link>
+      </section>
+      <div className="catalog-create-layout">
+        <form className="form-panel" onSubmit={submit}>
+          <div className="form-grid">
+            <label>
+              Nama produk
+              <input
+                required
+                maxLength={160}
+                value={form.name}
+                onChange={(event) => update('name', event.target.value)}
+              />
+            </label>
+            <label>
+              SKU
+              <input
+                required
+                maxLength={80}
+                value={form.sku}
+                onChange={(event) => update('sku', event.target.value.toUpperCase())}
+              />
+            </label>
+            <label>
+              Barcode <span className="field-hint">opsional</span>
+              <input
+                value={form.barcode}
+                onChange={(event) => update('barcode', event.target.value)}
+              />
+            </label>
+            <label>
+              Label varian
+              <input
+                required
+                value={form.label}
+                onChange={(event) => update('label', event.target.value)}
+              />
+            </label>
+            <label>
+              Unit dasar
+              <input
+                required
+                value={form.unit_key}
+                onChange={(event) => update('unit_key', event.target.value)}
+              />
+            </label>
+            <label>
+              Pajak <span className="field-hint">basis poin, 1000 = 10%</span>
+              <input
+                inputMode="numeric"
+                value={form.tax_rate_bp}
+                onChange={(event) => update('tax_rate_bp', event.target.value.replace(/\D/g, ''))}
+              />
+            </label>
+            <label>
+              Harga jual (rupiah)
+              <input
+                required
+                inputMode="numeric"
+                min="0"
+                value={form.price_minor}
+                onChange={(event) => update('price_minor', event.target.value.replace(/\D/g, ''))}
+              />
+            </label>
+            <label>
+              Harga modal (rupiah)
+              <input
+                required
+                inputMode="numeric"
+                min="0"
+                value={form.cost_minor}
+                onChange={(event) => update('cost_minor', event.target.value.replace(/\D/g, ''))}
+              />
+            </label>
+            <label>
+              Titik pesan ulang
+              <input
+                inputMode="numeric"
+                min="0"
+                value={form.reorder_level}
+                onChange={(event) => update('reorder_level', event.target.value.replace(/\D/g, ''))}
+              />
+            </label>
+            <label className="field-wide">
+              Deskripsi
+              <textarea
+                maxLength={500}
+                value={form.description}
+                onChange={(event) => update('description', event.target.value)}
+              />
+            </label>
+            <label>
+              Kategori
+              <select
+                value={form.category_id}
+                onChange={(event) => update('category_id', event.target.value)}
+              >
+                <option value="">Tanpa kategori</option>
+                {options.categories.map((option) => (
+                  <option key={option.id} value={option.id}>
+                    {option.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              Brand
+              <select
+                value={form.brand_id}
+                onChange={(event) => update('brand_id', event.target.value)}
+              >
+                <option value="">Tanpa brand</option>
+                {options.brands.map((option) => (
+                  <option key={option.id} value={option.id}>
+                    {option.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
+          {error && <Notice message={error} />}
+          <div className="form-actions">
+            <Link className="button secondary" to="/app/products">
+              Kembali
+            </Link>
+            <button className="button" disabled={saving} type="submit">
+              {saving ? 'Menyimpan...' : 'Simpan produk'}
+            </button>
+          </div>
+        </form>
+        <section className="panel option-panel">
+          <span className="workspace-kicker">REFERENSI KATALOG</span>
+          <h2>Tambah kategori atau brand.</h2>
+          <p className="muted-copy">Buat pilihan baru tanpa meninggalkan formulir produk.</p>
+          <form className="compact-form" onSubmit={createOption}>
+            <label>
+              Jenis
+              <select
+                value={optionType}
+                onChange={(event) => setOptionType(event.target.value as 'category' | 'brand')}
+              >
+                <option value="category">Kategori</option>
+                <option value="brand">Brand</option>
+              </select>
+            </label>
+            <label>
+              Nama
+              <input
+                required
+                maxLength={120}
+                value={optionName}
+                onChange={(event) => setOptionName(event.target.value)}
+              />
+            </label>
+            <button className="button secondary" type="submit">
+              Tambah pilihan
+            </button>
+          </form>
+        </section>
+      </div>
+    </Layout>
+  );
+}
+
+function ProductEdit() {
+  const { productId } = useParams();
+  const navigate = useNavigate();
+  const [businesses, setBusinesses] = useState<Business[]>([]);
+  const [form, setForm] = useState({
+    name: '',
+    barcode: '',
+    description: '',
+    unit_key: 'pcs',
+    price_minor: '',
+    cost_minor: '',
+    tax_rate_bp: '0',
+    reorder_level: '0',
+    category_id: '',
+    brand_id: '',
+  });
+  const [options, setOptions] = useState<{
+    categories: Array<{ id: string; name: string }>;
+    brands: Array<{ id: string; name: string }>;
+  }>({ categories: [], brands: [] });
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+  const update = (key: keyof typeof form, value: string) =>
+    setForm((current) => ({ ...current, [key]: value }));
+  useEffect(() => {
+    if (!productId) return;
+    void api<Business[]>('/api/v1/businesses')
+      .then(async (items) => {
+        setBusinesses(items);
+        const id = readActiveBusinessId(items);
+        if (!id) throw new Error('Buat ruang kerja terlebih dahulu');
+        const [product, catalogOptions] = await Promise.all([
+          api<{
+            name: string;
+            barcode: string | null;
+            description: string | null;
+            unit_key: string;
+            price_minor: number;
+            cost_minor: number;
+            tax_rate_bp: number;
+            reorder_level: number;
+            category_id: string | null;
+            brand_id: string | null;
+          }>(`/api/v1/businesses/${id}/products/${productId}`),
+          api<typeof options>(`/api/v1/businesses/${id}/catalog-options`),
+        ]);
+        setForm({
+          name: product.name,
+          barcode: product.barcode ?? '',
+          description: product.description ?? '',
+          unit_key: product.unit_key,
+          price_minor: String(product.price_minor),
+          cost_minor: String(product.cost_minor),
+          tax_rate_bp: String(product.tax_rate_bp),
+          reorder_level: String(product.reorder_level),
+          category_id: product.category_id ?? '',
+          brand_id: product.brand_id ?? '',
+        });
+        setOptions(catalogOptions);
+      })
+      .catch((err: Error) => setError(err.message))
+      .finally(() => setLoading(false));
+  }, [productId]);
+  const submit = async (event: React.FormEvent) => {
+    event.preventDefault();
+    const id = readActiveBusinessId(businesses);
+    if (!id || !productId) return;
+    setSaving(true);
+    setError('');
+    try {
+      await api(`/api/v1/businesses/${id}/products/${productId}`, {
+        method: 'PATCH',
+        headers: { 'X-CSRF-Token': getCsrf() },
+        body: JSON.stringify(form),
+      });
+      navigate('/app/products');
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setSaving(false);
+    }
+  };
+  if (loading)
+    return (
+      <Layout>
+        <div className="state-card catalog-state">Memuat detail produk...</div>
+      </Layout>
+    );
+  return (
+    <Layout>
+      <section className="page-heading">
+        <div>
+          <span className="workspace-kicker">KATALOG / EDIT PRODUK</span>
+          <h1>Perbarui detail.</h1>
+          <p>
+            Perubahan katalog berlaku untuk transaksi berikutnya. Riwayat penjualan tetap memakai
+            snapshotnya.
+          </p>
         </div>
         <Link className="button secondary" to="/app/products">
           Batal
@@ -991,33 +2238,16 @@ function ProductCreate() {
             Nama produk
             <input
               required
-              maxLength={120}
+              maxLength={160}
               value={form.name}
               onChange={(event) => update('name', event.target.value)}
             />
           </label>
           <label>
-            SKU
-            <input
-              required
-              maxLength={80}
-              value={form.sku}
-              onChange={(event) => update('sku', event.target.value.toUpperCase())}
-            />
-          </label>
-          <label>
-            Barcode <span className="field-hint">opsional</span>
+            Barcode
             <input
               value={form.barcode}
               onChange={(event) => update('barcode', event.target.value)}
-            />
-          </label>
-          <label>
-            Label varian
-            <input
-              required
-              value={form.label}
-              onChange={(event) => update('label', event.target.value)}
             />
           </label>
           <label>
@@ -1029,7 +2259,7 @@ function ProductCreate() {
             />
           </label>
           <label>
-            Pajak <span className="field-hint">basis poin, 1000 = 10%</span>
+            Pajak <span className="field-hint">basis poin</span>
             <input
               inputMode="numeric"
               value={form.tax_rate_bp}
@@ -1041,7 +2271,6 @@ function ProductCreate() {
             <input
               required
               inputMode="numeric"
-              min="0"
               value={form.price_minor}
               onChange={(event) => update('price_minor', event.target.value.replace(/\D/g, ''))}
             />
@@ -1051,9 +2280,52 @@ function ProductCreate() {
             <input
               required
               inputMode="numeric"
-              min="0"
               value={form.cost_minor}
               onChange={(event) => update('cost_minor', event.target.value.replace(/\D/g, ''))}
+            />
+          </label>
+          <label>
+            Titik pesan ulang
+            <input
+              inputMode="numeric"
+              value={form.reorder_level}
+              onChange={(event) => update('reorder_level', event.target.value.replace(/\D/g, ''))}
+            />
+          </label>
+          <label>
+            Kategori
+            <select
+              value={form.category_id}
+              onChange={(event) => update('category_id', event.target.value)}
+            >
+              <option value="">Tanpa kategori</option>
+              {options.categories.map((option) => (
+                <option key={option.id} value={option.id}>
+                  {option.name}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label>
+            Brand
+            <select
+              value={form.brand_id}
+              onChange={(event) => update('brand_id', event.target.value)}
+            >
+              <option value="">Tanpa brand</option>
+              {options.brands.map((option) => (
+                <option key={option.id} value={option.id}>
+                  {option.name}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="field-wide">
+            Deskripsi
+            <textarea
+              maxLength={500}
+              value={form.description}
+              onChange={(event) => update('description', event.target.value)}
             />
           </label>
         </div>
@@ -1063,82 +2335,466 @@ function ProductCreate() {
             Kembali
           </Link>
           <button className="button" disabled={saving} type="submit">
-            {saving ? 'Menyimpan…' : 'Simpan produk'}
+            {saving ? 'Menyimpan...' : 'Simpan perubahan'}
           </button>
         </div>
       </form>
     </Layout>
   );
 }
+
 function Inventory() {
+  type InventoryRow = {
+    outlet_id: string;
+    variant_id: string;
+    name: string;
+    sku: string;
+    label: string;
+    quantity_on_hand: number;
+    average_cost_minor: number;
+    updated_at: string;
+  };
+  type Movement = InventoryRow & {
+    id: string;
+    movement_type: string;
+    quantity_delta: number;
+    unit_cost_minor: number;
+    source_type: string;
+    source_id: string;
+    created_at: string;
+  };
   const [businesses, setBusinesses] = useState<Business[]>([]);
-  const [rows, setRows] = useState<
-    Array<{
-      outlet_id: string;
-      variant_id: string;
-      name: string;
-      sku: string;
-      label: string;
-      quantity_on_hand: number;
-    }>
-  >([]);
+  const [rows, setRows] = useState<InventoryRow[]>([]);
+  const [movements, setMovements] = useState<Movement[]>([]);
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [outletId, setOutletId] = useState('');
+  const load = async (id: string, selectedOutlet = outletId) => {
+    const query = selectedOutlet ? `?outlet_id=${encodeURIComponent(selectedOutlet)}` : '';
+    const [balances, history] = await Promise.all([
+      api<InventoryRow[]>(`/api/v1/businesses/${id}/inventory${query}`),
+      api<Movement[]>(`/api/v1/businesses/${id}/inventory/movements${query}`),
+    ]);
+    setRows(balances);
+    setMovements(history);
+  };
   useEffect(() => {
     void api<Business[]>('/api/v1/businesses')
-      .then((items) => {
+      .then(async (items) => {
         setBusinesses(items);
-        if (items[0]) return api<typeof rows>(`/api/v1/businesses/${items[0].id}/inventory`);
-        return [];
+        if (items[0]) await load(items[0].id);
       })
-      .then(setRows)
-      .catch((err: Error) => setError(err.message));
+      .catch((err: Error) => setError(err.message))
+      .finally(() => setLoading(false));
   }, []);
+  const businessId = businesses[0]?.id ?? '';
   return (
     <Layout>
       <section className="page-heading">
         <div>
           <span className="workspace-kicker">INVENTORI</span>
           <h1>Stok yang dapat dipercaya.</h1>
-          <p>
-            {businesses[0]
-              ? 'Saldo terkini dari setiap outlet.'
-              : 'Hubungkan ruang kerja untuk memuat saldo stok.'}
-          </p>
+          <p>Saldo terkini dan jejak perubahannya, per outlet.</p>
         </div>
         <div className="heading-actions">
           <Link className="button" to="/app/inventory/adjustments">
-            Isi stok awal
+            Catat penyesuaian
           </Link>
-          <span className="panel-label">{rows.length} SALDO</span>
+          <Link className="button secondary" to="/app/inventory/workflows">
+            Opname dan transfer
+          </Link>
         </div>
       </section>
-      {error ? (
-        <Notice message={error} />
-      ) : rows.length ? (
-        <div className="data-list">
-          {rows.map((row) => (
-            <article className="data-row" key={`${row.outlet_id}-${row.variant_id}`}>
-              <span>
-                <strong>{row.name}</strong>
-                <small>
-                  {row.label} · {row.sku} · {row.outlet_id.slice(0, 8)}
-                </small>
-              </span>
-              <b className={row.quantity_on_hand <= 0 ? 'negative' : ''}>
-                {row.quantity_on_hand} pcs
-              </b>
-            </article>
-          ))}
+      <section className="inventory-controls">
+        <label>
+          <span>Outlet</span>
+          <select
+            aria-label="Filter outlet"
+            value={outletId}
+            onChange={(event) => {
+              setOutletId(event.target.value);
+              if (businessId)
+                void load(businessId, event.target.value).catch((err: Error) =>
+                  setError(err.message),
+                );
+            }}
+          >
+            <option value="">Semua outlet yang dapat diakses</option>
+          </select>
+        </label>
+      </section>
+      {loading && (
+        <div className="state-card catalog-state" role="status">
+          Memuat saldo dan riwayat stok...
         </div>
-      ) : (
+      )}
+      {error && <Notice message={error} />}
+      {!loading && !error && !rows.length && (
         <div className="empty-panel">
-          <span className="empty-number">—</span>
+          <span className="empty-number">STOK</span>
           <h2>Belum ada saldo stok.</h2>
-          <p>Buat produk lalu isi stok awal untuk mulai berjualan.</p>
+          <p>Buat produk lalu catat penerimaan atau penyesuaian pertama.</p>
           <Link className="button" to="/app/inventory/adjustments">
-            Isi stok awal
+            Catat stok pertama
           </Link>
         </div>
+      )}
+      {!loading && !error && rows.length > 0 && (
+        <>
+          <div className="data-list">
+            {rows.map((row) => (
+              <article className="data-row" key={`${row.outlet_id}-${row.variant_id}`}>
+                <span>
+                  <strong>{row.name}</strong>
+                  <small>
+                    {row.label} · {row.sku} · Outlet {row.outlet_id.slice(0, 8)}
+                  </small>
+                </span>
+                <b className={row.quantity_on_hand <= 0 ? 'negative' : ''}>
+                  {row.quantity_on_hand} pcs
+                </b>
+              </article>
+            ))}
+          </div>
+          <section className="movement-panel">
+            <div className="panel-header">
+              <h2>Riwayat movement</h2>
+              <span>{movements.length} catatan terbaru</span>
+            </div>
+            {!movements.length && (
+              <p className="muted-copy">Belum ada movement untuk filter ini.</p>
+            )}
+            <div className="movement-list">
+              {movements.map((movement) => (
+                <article className="movement-row" key={movement.id}>
+                  <span>
+                    <strong>
+                      {movement.name} · {movement.label}
+                    </strong>
+                    <small>
+                      {movement.movement_type} · {movement.source_type}:
+                      {movement.source_id.slice(0, 8)}
+                    </small>
+                  </span>
+                  <b className={movement.quantity_delta < 0 ? 'negative' : ''}>
+                    {movement.quantity_delta > 0 ? '+' : ''}
+                    {movement.quantity_delta}
+                  </b>
+                </article>
+              ))}
+            </div>
+          </section>
+        </>
+      )}
+    </Layout>
+  );
+}
+
+function InventoryWorkflows() {
+  type OutletOption = { id: string; name: string; code: string };
+  type ProductOption = { variant_id: string; name: string; sku: string };
+  type Count = { id: string; outlet_id: string; status: string; created_at: string };
+  type Transfer = {
+    id: string;
+    source_outlet_id: string;
+    destination_outlet_id: string;
+    status: string;
+    created_at: string;
+  };
+  const [businesses, setBusinesses] = useState<Business[]>([]);
+  const [outlets, setOutlets] = useState<OutletOption[]>([]);
+  const [products, setProducts] = useState<ProductOption[]>([]);
+  const [counts, setCounts] = useState<Count[]>([]);
+  const [transfers, setTransfers] = useState<Transfer[]>([]);
+  const [outletId, setOutletId] = useState('');
+  const [destinationId, setDestinationId] = useState('');
+  const [variantId, setVariantId] = useState('');
+  const [quantity, setQuantity] = useState('');
+  const [physicalQuantity, setPhysicalQuantity] = useState('');
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const businessId = businesses[0]?.id ?? '';
+  const refresh = async (id: string) => {
+    const [outletRows, productRows, countRows, transferRows] = await Promise.all([
+      api<OutletOption[]>(`/api/v1/businesses/${id}/outlets`),
+      api<ProductOption[]>(`/api/v1/businesses/${id}/products`),
+      api<Count[]>(`/api/v1/businesses/${id}/stock-counts`),
+      api<Transfer[]>(`/api/v1/businesses/${id}/stock-transfers`),
+    ]);
+    setOutlets(outletRows);
+    setProducts(productRows);
+    setCounts(countRows);
+    setTransfers(transferRows);
+    setOutletId((current) => current || outletRows[0]?.id || '');
+    setDestinationId((current) => current || outletRows[1]?.id || '');
+    setVariantId((current) => current || productRows[0]?.variant_id || '');
+  };
+  useEffect(() => {
+    void api<Business[]>('/api/v1/businesses')
+      .then((items) => {
+        setBusinesses(items);
+        if (items[0]) return refresh(items[0].id);
+        return undefined;
+      })
+      .catch((err: Error) => setError(err.message))
+      .finally(() => setLoading(false));
+  }, []);
+  const createCount = async (event: React.FormEvent) => {
+    event.preventDefault();
+    setBusy(true);
+    setError('');
+    try {
+      await api(`/api/v1/businesses/${businessId}/stock-counts`, {
+        method: 'POST',
+        headers: { 'X-CSRF-Token': getCsrf() },
+        body: JSON.stringify({
+          outlet_id: outletId,
+          lines: [{ variant_id: variantId, physical_quantity: Number(physicalQuantity) }],
+        }),
+      });
+      setPhysicalQuantity('');
+      await refresh(businessId);
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  const createTransfer = async (event: React.FormEvent) => {
+    event.preventDefault();
+    setBusy(true);
+    setError('');
+    try {
+      await api(`/api/v1/businesses/${businessId}/stock-transfers`, {
+        method: 'POST',
+        headers: { 'X-CSRF-Token': getCsrf() },
+        body: JSON.stringify({
+          source_outlet_id: outletId,
+          destination_outlet_id: destinationId,
+          lines: [{ variant_id: variantId, quantity: Number(quantity) }],
+        }),
+      });
+      setQuantity('');
+      await refresh(businessId);
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  const runTransfer = async (transferId: string, action: 'send' | 'receive') => {
+    setBusy(true);
+    setError('');
+    try {
+      await api(`/api/v1/businesses/${businessId}/stock-transfers/${transferId}/${action}`, {
+        method: 'POST',
+        headers: { 'X-CSRF-Token': getCsrf() },
+      });
+      await refresh(businessId);
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <Layout>
+      <section className="page-heading">
+        <div>
+          <span className="workspace-kicker">INVENTORI / WORKFLOW</span>
+          <h1>Opname dan transfer.</h1>
+          <p>
+            Draft tidak mengubah saldo. Posting dan pengiriman meninggalkan jejak yang bisa diaudit.
+          </p>
+        </div>
+        <Link className="button secondary" to="/app/inventory">
+          Kembali ke saldo
+        </Link>
+      </section>
+      {loading && (
+        <div className="state-card catalog-state" role="status">
+          Memuat workflow stok...
+        </div>
+      )}
+      {error && <Notice message={error} />}
+      {!loading && (
+        <section className="workflow-grid">
+          <form className="panel compact-form" onSubmit={(event) => void createCount(event)}>
+            <div className="panel-header">
+              <h2>Mulai stock count</h2>
+              <span>Draft → posted</span>
+            </div>
+            <label>
+              Outlet
+              <select
+                required
+                value={outletId}
+                onChange={(event) => setOutletId(event.target.value)}
+              >
+                {outlets.map((outlet) => (
+                  <option key={outlet.id} value={outlet.id}>
+                    {outlet.name} · {outlet.code}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              Produk
+              <select
+                required
+                value={variantId}
+                onChange={(event) => setVariantId(event.target.value)}
+              >
+                {products.map((product) => (
+                  <option key={product.variant_id} value={product.variant_id}>
+                    {product.name} · {product.sku}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              Jumlah fisik
+              <input
+                required
+                min="0"
+                type="number"
+                value={physicalQuantity}
+                onChange={(event) => setPhysicalQuantity(event.target.value)}
+              />
+            </label>
+            <button className="button" disabled={busy || !outlets.length || !products.length}>
+              Simpan hitungan
+            </button>
+          </form>
+          <form className="panel compact-form" onSubmit={(event) => void createTransfer(event)}>
+            <div className="panel-header">
+              <h2>Buat transfer</h2>
+              <span>requested → sent</span>
+            </div>
+            <label>
+              Dari
+              <select
+                required
+                value={outletId}
+                onChange={(event) => setOutletId(event.target.value)}
+              >
+                {outlets.map((outlet) => (
+                  <option key={outlet.id} value={outlet.id}>
+                    {outlet.name} · {outlet.code}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              Ke
+              <select
+                required
+                value={destinationId}
+                onChange={(event) => setDestinationId(event.target.value)}
+              >
+                {outlets
+                  .filter((outlet) => outlet.id !== outletId)
+                  .map((outlet) => (
+                    <option key={outlet.id} value={outlet.id}>
+                      {outlet.name} · {outlet.code}
+                    </option>
+                  ))}
+              </select>
+            </label>
+            <label>
+              Produk
+              <select
+                required
+                value={variantId}
+                onChange={(event) => setVariantId(event.target.value)}
+              >
+                {products.map((product) => (
+                  <option key={product.variant_id} value={product.variant_id}>
+                    {product.name} · {product.sku}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              Jumlah
+              <input
+                required
+                min="1"
+                type="number"
+                value={quantity}
+                onChange={(event) => setQuantity(event.target.value)}
+              />
+            </label>
+            <button className="button" disabled={busy || outlets.length < 2 || !products.length}>
+              Buat transfer
+            </button>
+          </form>
+        </section>
+      )}
+      {!loading && (
+        <section className="workflow-history">
+          <div className="panel">
+            <div className="panel-header">
+              <h2>Stock counts</h2>
+              <span>{counts.length} terbaru</span>
+            </div>
+            {counts.length ? (
+              counts.map((count) => (
+                <div className="mini-row" key={count.id}>
+                  <span>
+                    <strong>{count.status}</strong>
+                    <small>Outlet {count.outlet_id.slice(0, 8)}</small>
+                  </span>
+                  <small>{count.id.slice(0, 8)}</small>
+                </div>
+              ))
+            ) : (
+              <p className="muted-copy">Belum ada stock count.</p>
+            )}
+          </div>
+          <div className="panel">
+            <div className="panel-header">
+              <h2>Transfers</h2>
+              <span>{transfers.length} terbaru</span>
+            </div>
+            {transfers.length ? (
+              transfers.map((transfer) => (
+                <div className="mini-row" key={transfer.id}>
+                  <span>
+                    <strong>{transfer.status}</strong>
+                    <small>
+                      {transfer.source_outlet_id.slice(0, 8)} →{' '}
+                      {transfer.destination_outlet_id.slice(0, 8)}
+                    </small>
+                  </span>
+                  <span className="heading-actions">
+                    {transfer.status === 'requested' && (
+                      <button
+                        className="button small"
+                        disabled={busy}
+                        onClick={() => void runTransfer(transfer.id, 'send')}
+                      >
+                        Kirim
+                      </button>
+                    )}
+                    {transfer.status === 'sent' && (
+                      <button
+                        className="button small"
+                        disabled={busy}
+                        onClick={() => void runTransfer(transfer.id, 'receive')}
+                      >
+                        Terima
+                      </button>
+                    )}
+                  </span>
+                </div>
+              ))
+            ) : (
+              <p className="muted-copy">Belum ada transfer.</p>
+            )}
+          </div>
+        </section>
       )}
     </Layout>
   );
@@ -1157,6 +2813,7 @@ function InventoryAdjustment() {
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
   const [saving, setSaving] = useState(false);
+  const requestKey = useRef('');
   useEffect(() => {
     void api<Business[]>('/api/v1/businesses')
       .then(async (items) => {
@@ -1182,6 +2839,7 @@ function InventoryAdjustment() {
     try {
       const businessId = businesses[0]?.id;
       if (!businessId) throw new Error('Buat ruang kerja terlebih dahulu');
+      if (!requestKey.current) requestKey.current = crypto.randomUUID();
       const result = await api<{ quantity_on_hand: number; average_cost_minor: number }>(
         `/api/v1/businesses/${businessId}/inventory/adjustments`,
         {
@@ -1193,6 +2851,7 @@ function InventoryAdjustment() {
             quantity_delta: quantity,
             unit_cost_minor: cost,
             reason,
+            idempotency_key: requestKey.current,
           }),
         },
       );
@@ -1200,6 +2859,7 @@ function InventoryAdjustment() {
         `Stok tersimpan: ${result.quantity_on_hand} pcs · modal rata-rata ${money(result.average_cost_minor)}`,
       );
       setQuantity('');
+      requestKey.current = '';
       setTimeout(() => navigate('/app/inventory'), 700);
     } catch (err) {
       setError((err as Error).message);
@@ -2358,6 +4018,546 @@ function Expenses() {
     </Layout>
   );
 }
+function Staff() {
+  const [businesses, setBusinesses] = useState<Business[]>([]);
+  const [outlets, setOutlets] = useState<Outlet[]>([]);
+  const [staff, setStaff] = useState<StaffMember[]>([]);
+  const [businessId, setBusinessId] = useState('');
+  const [email, setEmail] = useState('');
+  const [inviteRole, setInviteRole] = useState('cashier');
+  const [drafts, setDrafts] = useState<
+    Record<string, { role: string; allOutlets: boolean; outletIds: string[] }>
+  >({});
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState('');
+  const [error, setError] = useState('');
+  const [success, setSuccess] = useState('');
+  const load = async (id: string) => {
+    setLoading(true);
+    setError('');
+    try {
+      const [staffRows, outletRows] = await Promise.all([
+        api<StaffMember[]>(`/api/v1/businesses/${id}/staff`),
+        api<Outlet[]>(`/api/v1/businesses/${id}/outlets`),
+      ]);
+      setStaff(staffRows);
+      setOutlets(outletRows);
+      setDrafts(
+        Object.fromEntries(
+          staffRows.map((member) => [
+            member.id,
+            {
+              role: member.role_keys?.split(',')[0] ?? 'cashier',
+              allOutlets: member.all_outlets === 1,
+              outletIds: member.outlet_ids?.split(',').filter(Boolean) ?? [],
+            },
+          ]),
+        ),
+      );
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setLoading(false);
+    }
+  };
+  useEffect(() => {
+    void api<Business[]>('/api/v1/businesses')
+      .then((items) => {
+        setBusinesses(items);
+        const id = readActiveBusinessId(items);
+        setBusinessId(id);
+        if (id) return load(id);
+      })
+      .catch((err: Error) => {
+        setError(err.message);
+        setLoading(false);
+      });
+  }, []);
+  const changeBusiness = (id: string) => {
+    setBusinessId(id);
+    localStorage.setItem(ACTIVE_BUSINESS_KEY, id);
+    window.dispatchEvent(new Event('kasuro-business-changed'));
+    void load(id);
+  };
+  const invite = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!businessId) return;
+    setSaving('invite');
+    setError('');
+    setSuccess('');
+    try {
+      const result = await api<{ email: string; role_key: string; invitation_token: string }>(
+        `/api/v1/businesses/${businessId}/staff/invitations`,
+        {
+          method: 'POST',
+          headers: { 'X-CSRF-Token': getCsrf() },
+          body: JSON.stringify({ email, role_key: inviteRole }),
+        },
+      );
+      setSuccess(`Undangan untuk ${result.email} dibuat. Token: ${result.invitation_token}`);
+      setEmail('');
+      await load(businessId);
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setSaving('');
+    }
+  };
+  type StaffDraft = { role: string; allOutlets: boolean; outletIds: string[] };
+  const updateDraft = (memberId: string, patch: Partial<StaffDraft>) =>
+    setDrafts((current) => {
+      const existing = current[memberId];
+      return existing ? { ...current, [memberId]: { ...existing, ...patch } } : current;
+    });
+  const toggleOutlet = (memberId: string, outletId: string) => {
+    const draft = drafts[memberId];
+    if (!draft) return;
+    updateDraft(memberId, {
+      outletIds: draft.outletIds.includes(outletId)
+        ? draft.outletIds.filter((id) => id !== outletId)
+        : [...draft.outletIds, outletId],
+    });
+  };
+  const saveMember = async (memberId: string) => {
+    const draft = drafts[memberId];
+    if (!draft || !businessId) return;
+    setSaving(memberId);
+    setError('');
+    setSuccess('');
+    try {
+      await api(`/api/v1/businesses/${businessId}/staff/${memberId}`, {
+        method: 'PATCH',
+        headers: { 'X-CSRF-Token': getCsrf() },
+        body: JSON.stringify({
+          role_key: draft.role,
+          all_outlets: draft.allOutlets,
+          outlet_ids: draft.outletIds,
+        }),
+      });
+      setSuccess('Akses staf diperbarui.');
+      await load(businessId);
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setSaving('');
+    }
+  };
+  return (
+    <Layout>
+      <section className="page-heading">
+        <div>
+          <span className="workspace-kicker">TIM / AKSES</span>
+          <h1>Siapa yang boleh masuk.</h1>
+          <p>Undang staf, tetapkan peran, lalu batasi pekerjaan mereka ke outlet yang benar.</p>
+        </div>
+        <label className="context-select">
+          Bisnis aktif
+          <select value={businessId} onChange={(event) => changeBusiness(event.target.value)}>
+            {businesses.map((business) => (
+              <option key={business.id} value={business.id}>
+                {business.name}
+              </option>
+            ))}
+          </select>
+        </label>
+      </section>
+      {error && <Notice message={error} />}
+      {success && (
+        <div className="success-notice inline-notice" role="status">
+          {success}
+        </div>
+      )}
+      <section className="management-grid">
+        <form className="form-panel management-form" onSubmit={invite}>
+          <div>
+            <span className="panel-label">UNDANG STAF</span>
+            <h2>Tambahkan orang ke ruang kerja.</h2>
+          </div>
+          <label>
+            Email kerja
+            <input
+              required
+              type="email"
+              value={email}
+              onChange={(event) => setEmail(event.target.value)}
+              placeholder="email@example.com"
+            />
+          </label>
+          <label>
+            Peran awal
+            <select value={inviteRole} onChange={(event) => setInviteRole(event.target.value)}>
+              <option value="admin">Admin</option>
+              <option value="manager">Manager</option>
+              <option value="cashier">Kasir</option>
+              <option value="inventory_staff">Staf inventori</option>
+            </select>
+          </label>
+          <button className="button" disabled={saving === 'invite' || !businessId} type="submit">
+            {saving === 'invite' ? 'Membuat…' : 'Buat undangan'}
+          </button>
+        </form>
+        <div className="panel management-note">
+          <span className="panel-label">ATURAN AKSES</span>
+          <h2>Peran memberi kemampuan. Outlet memberi batas.</h2>
+          <p>
+            Owner dan admin mengelola akses. Kasir dan staf inventori hanya melihat outlet yang
+            ditugaskan.
+          </p>
+        </div>
+      </section>
+      <section className="management-list">
+        <div className="section-intro">
+          <span className="panel-label">ANGGOTA AKTIF</span>
+          <h2>Staf dan penugasannya.</h2>
+        </div>
+        {loading ? (
+          <div className="state-card">Memuat anggota dan outlet…</div>
+        ) : staff.length === 0 ? (
+          <div className="state-card">Belum ada anggota lain. Buat undangan pertama di atas.</div>
+        ) : (
+          <div className="staff-list">
+            {staff.map((member) => {
+              const draft = drafts[member.id];
+              return (
+                <article className="staff-card" key={member.id}>
+                  <div className="staff-identity">
+                    <strong>{member.display_name || member.email}</strong>
+                    <small>
+                      {member.email} · {member.status}
+                    </small>
+                  </div>
+                  <div className="staff-controls">
+                    <label>
+                      Peran
+                      <select
+                        value={draft?.role ?? 'cashier'}
+                        onChange={(event) => updateDraft(member.id, { role: event.target.value })}
+                      >
+                        <option value="admin">Admin</option>
+                        <option value="manager">Manager</option>
+                        <option value="cashier">Kasir</option>
+                        <option value="inventory_staff">Staf inventori</option>
+                      </select>
+                    </label>
+                    <label className="scope-toggle">
+                      <input
+                        type="checkbox"
+                        checked={draft?.allOutlets ?? false}
+                        onChange={(event) =>
+                          updateDraft(member.id, { allOutlets: event.target.checked })
+                        }
+                      />{' '}
+                      Semua outlet
+                    </label>
+                    {!draft?.allOutlets && (
+                      <fieldset className="outlet-checks">
+                        <legend>Outlet</legend>
+                        {outlets.map((outlet) => (
+                          <label key={outlet.id}>
+                            <input
+                              type="checkbox"
+                              checked={draft?.outletIds.includes(outlet.id) ?? false}
+                              onChange={() => toggleOutlet(member.id, outlet.id)}
+                            />{' '}
+                            {outlet.name}
+                          </label>
+                        ))}
+                      </fieldset>
+                    )}
+                    <button
+                      className="button small"
+                      disabled={saving === member.id}
+                      onClick={() => void saveMember(member.id)}
+                      type="button"
+                    >
+                      {saving === member.id ? 'Menyimpan…' : 'Simpan akses'}
+                    </button>
+                  </div>
+                </article>
+              );
+            })}
+          </div>
+        )}
+      </section>
+    </Layout>
+  );
+}
+
+function Outlets() {
+  const [businesses, setBusinesses] = useState<Business[]>([]);
+  const [businessId, setBusinessId] = useState('');
+  const [outlets, setOutlets] = useState<Outlet[]>([]);
+  const [form, setForm] = useState({
+    code: '',
+    name: '',
+    address: '',
+    phone: '',
+    timezone: 'Asia/Jakarta',
+  });
+  const [editing, setEditing] = useState<Outlet | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+  const [success, setSuccess] = useState('');
+  const load = async (id: string) => {
+    setLoading(true);
+    try {
+      setOutlets(await api<Outlet[]>(`/api/v1/businesses/${id}/outlets`));
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setLoading(false);
+    }
+  };
+  useEffect(() => {
+    void api<Business[]>('/api/v1/businesses')
+      .then((items) => {
+        setBusinesses(items);
+        const id = readActiveBusinessId(items);
+        setBusinessId(id);
+        if (id) return load(id);
+      })
+      .catch((err: Error) => {
+        setError(err.message);
+        setLoading(false);
+      });
+  }, []);
+  const changeBusiness = (id: string) => {
+    setBusinessId(id);
+    localStorage.setItem(ACTIVE_BUSINESS_KEY, id);
+    void load(id);
+  };
+  const createOutlet = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!businessId) return;
+    setSaving(true);
+    setError('');
+    setSuccess('');
+    try {
+      await api(`/api/v1/businesses/${businessId}/outlets`, {
+        method: 'POST',
+        headers: { 'X-CSRF-Token': getCsrf() },
+        body: JSON.stringify(form),
+      });
+      setForm({ code: '', name: '', address: '', phone: '', timezone: 'Asia/Jakarta' });
+      setSuccess('Outlet dan register pertamanya dibuat.');
+      await load(businessId);
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setSaving(false);
+    }
+  };
+  const updateOutlet = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!businessId || !editing) return;
+    setSaving(true);
+    setError('');
+    setSuccess('');
+    try {
+      await api(`/api/v1/businesses/${businessId}/outlets/${editing.id}`, {
+        method: 'PATCH',
+        headers: { 'X-CSRF-Token': getCsrf() },
+        body: JSON.stringify(editing),
+      });
+      setSuccess('Detail outlet diperbarui.');
+      setEditing(null);
+      await load(businessId);
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setSaving(false);
+    }
+  };
+  return (
+    <Layout>
+      <section className="page-heading">
+        <div>
+          <span className="workspace-kicker">RUANG KERJA / OUTLET</span>
+          <h1>Tempat transaksi terjadi.</h1>
+          <p>Kelola alamat operasional, status outlet, dan register awalnya.</p>
+        </div>
+        <label className="context-select">
+          Bisnis aktif
+          <select value={businessId} onChange={(event) => changeBusiness(event.target.value)}>
+            {businesses.map((business) => (
+              <option key={business.id} value={business.id}>
+                {business.name}
+              </option>
+            ))}
+          </select>
+        </label>
+      </section>
+      {error && <Notice message={error} />}
+      {success && (
+        <div className="success-notice inline-notice" role="status">
+          {success}
+        </div>
+      )}
+      <section className="management-grid">
+        <form className="form-panel management-form" onSubmit={createOutlet}>
+          <div>
+            <span className="panel-label">OUTLET BARU</span>
+            <h2>Buka titik operasional baru.</h2>
+          </div>
+          <label>
+            Kode
+            <input
+              required
+              maxLength={32}
+              value={form.code}
+              onChange={(event) => setForm({ ...form, code: event.target.value })}
+              placeholder="OUTLET-01"
+            />
+          </label>
+          <label>
+            Nama
+            <input
+              required
+              maxLength={120}
+              value={form.name}
+              onChange={(event) => setForm({ ...form, name: event.target.value })}
+              placeholder="Nama outlet"
+            />
+          </label>
+          <label>
+            Alamat
+            <input
+              value={form.address}
+              onChange={(event) => setForm({ ...form, address: event.target.value })}
+              placeholder="Alamat operasional"
+            />
+          </label>
+          <label>
+            Telepon
+            <input
+              value={form.phone}
+              onChange={(event) => setForm({ ...form, phone: event.target.value })}
+              placeholder="Nomor telepon"
+            />
+          </label>
+          <button className="button" disabled={saving || !businessId} type="submit">
+            {saving ? 'Menyimpan…' : 'Buat outlet'}
+          </button>
+        </form>
+        <div className="panel management-note">
+          <span className="panel-label">OPERASIONAL</span>
+          <h2>Setiap outlet mendapat register pertama otomatis.</h2>
+          <p>
+            Setelah dibuat, tetapkan staf ke outlet ini dari halaman Tim. Outlet nonaktif tidak
+            menerima transaksi baru.
+          </p>
+        </div>
+      </section>
+      <section className="management-list">
+        <div className="section-intro">
+          <span className="panel-label">DAFTAR OUTLET</span>
+          <h2>Outlet yang bisa dipilih tim.</h2>
+        </div>
+        {loading ? (
+          <div className="state-card">Memuat outlet…</div>
+        ) : outlets.length === 0 ? (
+          <div className="state-card">Belum ada outlet. Isi formulir untuk memulai.</div>
+        ) : (
+          <div className="outlet-list">
+            {outlets.map((outlet) => (
+              <article className="outlet-card" key={outlet.id}>
+                <div>
+                  <strong>{outlet.name}</strong>
+                  <small>
+                    {outlet.code} · {outlet.status === 'active' ? 'Aktif' : 'Nonaktif'}
+                  </small>
+                  <p>
+                    {outlet.address || 'Alamat belum diisi'}
+                    {outlet.phone ? ` · ${outlet.phone}` : ''}
+                  </p>
+                </div>
+                <div className="heading-actions">
+                  <button
+                    className="button secondary small"
+                    type="button"
+                    onClick={() => setEditing(outlet)}
+                  >
+                    Edit detail
+                  </button>
+                  <button
+                    className="button small"
+                    type="button"
+                    onClick={() =>
+                      void api(`/api/v1/businesses/${businessId}/outlets/${outlet.id}`, {
+                        method: 'PATCH',
+                        headers: { 'X-CSRF-Token': getCsrf() },
+                        body: JSON.stringify({
+                          status: outlet.status === 'active' ? 'inactive' : 'active',
+                        }),
+                      }).then(() => load(businessId))
+                    }
+                  >
+                    {outlet.status === 'active' ? 'Nonaktifkan' : 'Aktifkan'}
+                  </button>
+                </div>
+              </article>
+            ))}
+          </div>
+        )}
+      </section>
+      {editing && (
+        <div
+          className="modal-backdrop"
+          role="presentation"
+          onMouseDown={(event) => {
+            if (event.currentTarget === event.target) setEditing(null);
+          }}
+        >
+          <form className="form-panel modal-card" onSubmit={updateOutlet}>
+            <div className="panel-header">
+              <div>
+                <span className="panel-label">EDIT OUTLET</span>
+                <h2>{editing.name}</h2>
+              </div>
+              <button className="text-button dark" onClick={() => setEditing(null)} type="button">
+                Tutup
+              </button>
+            </div>
+            <label>
+              Nama
+              <input
+                required
+                value={editing.name}
+                onChange={(event) => setEditing({ ...editing, name: event.target.value })}
+              />
+            </label>
+            <label>
+              Alamat
+              <input
+                value={editing.address ?? ''}
+                onChange={(event) => setEditing({ ...editing, address: event.target.value })}
+              />
+            </label>
+            <label>
+              Telepon
+              <input
+                value={editing.phone ?? ''}
+                onChange={(event) => setEditing({ ...editing, phone: event.target.value })}
+              />
+            </label>
+            <label>
+              Zona waktu
+              <input
+                value={editing.timezone ?? ''}
+                onChange={(event) => setEditing({ ...editing, timezone: event.target.value })}
+              />
+            </label>
+            <button className="button" disabled={saving} type="submit">
+              {saving ? 'Menyimpan…' : 'Simpan perubahan'}
+            </button>
+          </form>
+        </div>
+      )}
+    </Layout>
+  );
+}
+
 function ImportExport() {
   type Job = {
     id: string;
@@ -2368,7 +4568,9 @@ function ImportExport() {
     rows?: Array<{ row_number: number; status: string; error_json: string | null }>;
   };
   const [businesses, setBusinesses] = useState<Business[]>([]);
-  const [importType, setImportType] = useState<'products' | 'customers' | 'suppliers'>('products');
+  const [importType, setImportType] = useState<
+    'products' | 'customers' | 'suppliers' | 'opening_stock'
+  >('products');
   const [filename, setFilename] = useState('kasuro-import.json');
   const [rawRows, setRawRows] = useState(
     '[{"name":"Contoh Produk","sku":"SKU-001","price_minor":10000,"cost_minor":5000}]',
@@ -2467,6 +4669,7 @@ function ImportExport() {
                 <option value="products">Produk</option>
                 <option value="customers">Pelanggan</option>
                 <option value="suppliers">Supplier</option>
+                <option value="opening_stock">Stok awal</option>
               </select>
             </label>
             <label>
@@ -2482,10 +4685,16 @@ function ImportExport() {
               Rows JSON
               <textarea
                 required
+                aria-describedby="import-format-help"
                 value={rawRows}
                 onChange={(event) => setRawRows(event.target.value)}
                 rows={8}
               />
+              <small id="import-format-help">
+                {importType === 'opening_stock'
+                  ? 'Gunakan variant_id atau sku, outlet_id atau outlet_code, quantity, dan unit_cost_minor.'
+                  : 'Gunakan array JSON dengan nama dan kode unik untuk setiap baris.'}
+              </small>
             </label>
             <button className="button" disabled={busy || !businessId} type="submit">
               Buat preview
@@ -2569,6 +4778,156 @@ function ImportExport() {
     </Layout>
   );
 }
+
+function Shifts() {
+  type ShiftRow = {
+    id: string;
+    outlet_id: string;
+    register_name: string;
+    cashier_name: string;
+    status: string;
+    opening_cash_minor: number;
+    expected_cash_minor: number | null;
+    actual_cash_minor: number | null;
+    difference_minor: number | null;
+    opened_at: string;
+    closed_at: string | null;
+  };
+  const [businesses, setBusinesses] = useState<Business[]>([]);
+  const [businessId, setBusinessId] = useState('');
+  const [outlets, setOutlets] = useState<Outlet[]>([]);
+  const [outletId, setOutletId] = useState('');
+  const [shifts, setShifts] = useState<ShiftRow[]>([]);
+  const [error, setError] = useState('');
+  const [loading, setLoading] = useState(true);
+  const load = async (id: string, selectedOutlet = outletId) => {
+    setLoading(true);
+    setError('');
+    try {
+      const query = selectedOutlet ? `?outlet_id=${encodeURIComponent(selectedOutlet)}` : '';
+      setShifts(await api<ShiftRow[]>(`/api/v1/businesses/${id}/shifts${query}`));
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setLoading(false);
+    }
+  };
+  useEffect(() => {
+    void api<Business[]>('/api/v1/businesses')
+      .then(async (items) => {
+        setBusinesses(items);
+        const id = readActiveBusinessId(items);
+        setBusinessId(id);
+        if (!id) return;
+        const rows = await api<Outlet[]>(`/api/v1/businesses/${id}/outlets`);
+        setOutlets(rows);
+        await load(id);
+      })
+      .catch((err: Error) => {
+        setError(err.message);
+        setLoading(false);
+      });
+  }, []);
+  const changeBusiness = async (id: string) => {
+    setBusinessId(id);
+    setOutletId('');
+    localStorage.setItem(ACTIVE_BUSINESS_KEY, id);
+    window.dispatchEvent(new Event('kasuro-business-changed'));
+    try {
+      const rows = await api<Outlet[]>(`/api/v1/businesses/${id}/outlets`);
+      setOutlets(rows);
+      await load(id, '');
+    } catch (err) {
+      setError((err as Error).message);
+    }
+  };
+  return (
+    <Layout>
+      <section className="page-heading">
+        <div>
+          <span className="workspace-kicker">SHIFT / KAS REGISTER</span>
+          <h1>Rekonsiliasi yang bisa ditelusuri.</h1>
+          <p>Periksa kas awal, hasil penjualan, pergerakan kas, dan selisih setiap shift.</p>
+        </div>
+        <div className="heading-actions">
+          <label className="context-select">
+            Bisnis aktif
+            <select
+              value={businessId}
+              onChange={(event) => void changeBusiness(event.target.value)}
+            >
+              {businesses.map((business) => (
+                <option key={business.id} value={business.id}>
+                  {business.name}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="context-select">
+            Outlet
+            <select
+              value={outletId}
+              onChange={(event) => {
+                setOutletId(event.target.value);
+                if (businessId) void load(businessId, event.target.value);
+              }}
+            >
+              <option value="">Semua outlet</option>
+              {outlets.map((outlet) => (
+                <option key={outlet.id} value={outlet.id}>
+                  {outlet.name}
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
+      </section>
+      {error && <Notice message={error} />}
+      {loading ? (
+        <div className="state-card">Memuat riwayat shift…</div>
+      ) : shifts.length ? (
+        <section className="shift-history data-list">
+          {shifts.map((shift) => (
+            <article className="data-row shift-history-row" key={shift.id}>
+              <div>
+                <strong>
+                  {shift.register_name} · {shift.outlet_id.slice(0, 8).toUpperCase()}
+                </strong>
+                <small>
+                  {shift.cashier_name} · {new Date(shift.opened_at).toLocaleString('id-ID')}
+                </small>
+                <small>
+                  {shift.closed_at
+                    ? `Ditutup ${new Date(shift.closed_at).toLocaleString('id-ID')}`
+                    : 'Masih berjalan'}
+                </small>
+              </div>
+              <div className="shift-history-values">
+                <span className={`status-tag ${shift.status}`}>{shift.status}</span>
+                <b>
+                  {shift.difference_minor === null
+                    ? 'Belum direkonsiliasi'
+                    : `Selisih ${money(shift.difference_minor)}`}
+                </b>
+                <small>
+                  Ekspektasi{' '}
+                  {shift.expected_cash_minor === null ? '—' : money(shift.expected_cash_minor)}
+                </small>
+              </div>
+            </article>
+          ))}
+        </section>
+      ) : (
+        <div className="empty-panel">
+          <span className="empty-number">—</span>
+          <h2>Belum ada riwayat shift.</h2>
+          <p>Shift yang dibuka dari kasir akan muncul di sini.</p>
+        </div>
+      )}
+    </Layout>
+  );
+}
+
 function Reports() {
   type Report = {
     summary: Record<string, number>;
@@ -2806,7 +5165,12 @@ function Sales() {
               : 'Hubungkan ruang kerja untuk memuat riwayat.'}
           </p>
         </div>
-        <span className="panel-label">{sales.length} TRANSAKSI</span>
+        <div className="heading-actions">
+          <Link className="button secondary" to="/app/refunds">
+            Riwayat refund
+          </Link>
+          <span className="panel-label">{sales.length} TRANSAKSI</span>
+        </div>
       </section>
       {error ? (
         <Notice message={error} />
@@ -2849,6 +5213,7 @@ function SaleDetail() {
   const [paymentMethod, setPaymentMethod] = useState('cash');
   const [quantities, setQuantities] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState(false);
+  const [voiding, setVoiding] = useState(false);
   const [businessId, setBusinessId] = useState('');
   useEffect(() => {
     void api<Business[]>('/api/v1/businesses')
@@ -2862,10 +5227,13 @@ function SaleDetail() {
       .catch((err: Error) => setError(err.message));
   }, [saleId]);
   const refundableLines = sale?.lines.filter((line) => line.refundable_quantity > 0) ?? [];
-  const refundTotal = refundableLines.reduce(
-    (total, line) => total + (Number(quantities[line.id] ?? 0) || 0) * line.unit_price_minor,
-    0,
-  );
+  const refundTotal = refundableLines.reduce((total, line) => {
+    const quantity = Number(quantities[line.id] ?? 0) || 0;
+    return (
+      total +
+      Math.floor((line.line_net_minor * quantity + Math.floor(line.quantity / 2)) / line.quantity)
+    );
+  }, 0);
   const submitRefund = async (event: React.FormEvent) => {
     event.preventDefault();
     if (!businessId || !saleId) return;
@@ -2897,6 +5265,24 @@ function SaleDetail() {
       setSaving(false);
     }
   };
+  const voidSale = async () => {
+    if (!businessId || !saleId || !sale || !['draft', 'held'].includes(sale.status)) return;
+    if (!window.confirm('Batalkan transaksi yang ditahan ini?')) return;
+    setVoiding(true);
+    setError('');
+    try {
+      await api(`/api/v1/businesses/${businessId}/sales/${saleId}/void`, {
+        method: 'POST',
+        headers: { 'X-CSRF-Token': getCsrf() },
+      });
+      setSale({ ...sale, status: 'void' });
+      setRefundMessage('Pesanan ditahan dibatalkan. Tidak ada stok atau pembayaran yang diubah.');
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setVoiding(false);
+    }
+  };
   return (
     <Layout>
       <section className="page-heading">
@@ -2908,6 +5294,16 @@ function SaleDetail() {
           </p>
         </div>
         <div className="heading-actions">
+          {sale && ['draft', 'held'].includes(sale.status) && (
+            <button
+              className="button secondary"
+              disabled={voiding}
+              onClick={() => void voidSale()}
+              type="button"
+            >
+              {voiding ? 'Membatalkan…' : 'Batalkan pesanan'}
+            </button>
+          )}
           <button className="button secondary" disabled={!sale} onClick={() => window.print()}>
             Cetak struk
           </button>
@@ -3509,10 +5905,26 @@ createRoot(document.getElementById('root')!).render(
           }
         />
         <Route
+          path="/app/shifts"
+          element={
+            <RequireAuth>
+              <Shifts />
+            </RequireAuth>
+          }
+        />
+        <Route
           path="/app/inventory/adjustments"
           element={
             <RequireAuth>
               <InventoryAdjustment />
+            </RequireAuth>
+          }
+        />
+        <Route
+          path="/app/inventory/workflows"
+          element={
+            <RequireAuth>
+              <InventoryWorkflows />
             </RequireAuth>
           }
         />
@@ -3557,6 +5969,14 @@ createRoot(document.getElementById('root')!).render(
           }
         />
         <Route
+          path="/app/products/:productId/edit"
+          element={
+            <RequireAuth>
+              <ProductEdit />
+            </RequireAuth>
+          }
+        />
+        <Route
           path="/app/expenses"
           element={
             <RequireAuth>
@@ -3585,6 +6005,22 @@ createRoot(document.getElementById('root')!).render(
           element={
             <RequireAuth>
               <Customers />
+            </RequireAuth>
+          }
+        />
+        <Route
+          path="/app/staff"
+          element={
+            <RequireAuth>
+              <Staff />
+            </RequireAuth>
+          }
+        />
+        <Route
+          path="/app/outlets"
+          element={
+            <RequireAuth>
+              <Outlets />
             </RequireAuth>
           }
         />
@@ -3645,7 +6081,7 @@ function FeaturesPage() {
         <section className="features-hero">
           <div>
             <span className="eyebrow">Di dalam Kasuro</span>
-            <h1>Semua yang perlu bergerak, ada di satu alur.</h1>
+            <h1>Semua yang penting, terlihat jelas.</h1>
             <p>
               Bukan kumpulan menu yang berdiri sendiri. Kasuro dibuat supaya transaksi, stok, dan
               tim saling menjelaskan.
@@ -3714,7 +6150,7 @@ function FeaturesPage() {
           <span className="eyebrow">Mulai dengan fondasi yang benar</span>
           <h2>Kasuro siap mengikuti cara bisnismu bekerja.</h2>
           <Link className="button" to="/register">
-            Buat ruang kerja pertama <span>↗</span>
+            Mulai gratis <span>↗</span>
           </Link>
         </section>
       </main>
@@ -3776,7 +6212,7 @@ function PublicHome() {
                 Mulai gratis <span>↗</span>
               </Link>
               <Link className="button secondary" to="/features">
-                Pelajari cara kerja
+                Lihat fitur
               </Link>
             </div>
             <div className="landing-note">
@@ -3892,7 +6328,7 @@ function PublicHome() {
               Siapkan bisnis dan outlet pertama. Sisanya bisa dibangun seiring ritme operasionalmu.
             </p>
             <Link className="button" to="/register">
-              Mulai gratis <span>↗</span>
+              Buat ruang kerja <span>↗</span>
             </Link>
           </div>
         </section>
