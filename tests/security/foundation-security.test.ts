@@ -79,4 +79,44 @@ describe('security and data boundaries', () => {
       'max-age=31536000; includeSubDomains',
     );
   });
+
+  it('rejects invalid content length before parsing request bodies', async () => {
+    const response = await app.fetch(
+      new Request('http://localhost/api/v1/auth/register', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Content-Length': 'not-a-number' },
+        body: JSON.stringify({}),
+      }),
+      { ENVIRONMENT: 'local' },
+    );
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({
+      error: {
+        code: 'INVALID_CONTENT_LENGTH',
+        message: 'Content-Length must be a non-negative integer',
+      },
+    });
+  });
+
+  it('limits authentication bursts by client address', async () => {
+    const headers = {
+      'Content-Type': 'application/json',
+      'CF-Connecting-IP': '198.51.100.42',
+    };
+    let response: Response | undefined;
+    for (let attempt = 0; attempt < 31; attempt += 1)
+      response = await app.fetch(
+        new Request('http://localhost/api/v1/auth/login', {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({ email: `burst-${attempt}@example.test`, password: 'wrong' }),
+        }),
+        { ENVIRONMENT: 'local' },
+      );
+    expect(response?.status).toBe(429);
+    expect(response?.headers.get('Retry-After')).toMatch(/^[1-9]\d*$/);
+    expect(await response?.json()).toEqual({
+      error: { code: 'TOO_MANY_REQUESTS', message: 'Too many authentication requests' },
+    });
+  });
 });
