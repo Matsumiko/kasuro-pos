@@ -269,13 +269,54 @@ describe('API integration over isolated local D1', () => {
       .bind(businessId, batu.body.data.id, product.body.data.variant_id)
       .first<{ quantity_on_hand: number; average_cost_minor: number }>();
     expect(receivedBalance).toEqual({ quantity_on_hand: 4, average_cost_minor: 12000 });
+    const concurrentPurchase = await request(
+      proxy.env,
+      `/api/v1/businesses/${businessId}/purchases`,
+      {
+        method: 'POST',
+        auth: owner,
+        body: {
+          supplier_id: supplier.body.data.id,
+          outlet_id: batu.body.data.id,
+          lines: [
+            { variant_id: product.body.data.variant_id, quantity: 4, unit_cost_minor: 13000 },
+          ],
+        },
+      },
+    );
+    const concurrentLine = await proxy.env.DB.prepare(
+      'SELECT id FROM purchase_order_lines WHERE purchase_order_id=?',
+    )
+      .bind(concurrentPurchase.body.data.id)
+      .first<{ id: string }>();
+    const concurrentReceipts = await Promise.all(
+      ['receipt-concurrent-a', 'receipt-concurrent-b'].map((receipt_id) =>
+        request(
+          proxy.env,
+          `/api/v1/businesses/${businessId}/purchases/${concurrentPurchase.body.data.id}/receive`,
+          {
+            method: 'POST',
+            auth: owner,
+            body: { receipt_id, lines: [{ line_id: concurrentLine!.id, quantity: 2 }] },
+          },
+        ),
+      ),
+    );
+    expect(concurrentReceipts.every((receipt) => receipt.status === 200)).toBe(true);
+    const concurrentBalance = await proxy.env.DB.prepare(
+      'SELECT quantity_on_hand,average_cost_minor FROM inventory_balances WHERE business_id=? AND outlet_id=? AND variant_id=?',
+    )
+      .bind(businessId, batu.body.data.id, product.body.data.variant_id)
+      .first<{ quantity_on_hand: number; average_cost_minor: number }>();
+    expect(concurrentBalance).toEqual({ quantity_on_hand: 8, average_cost_minor: 12500 });
+
     const purchaseListBeforeRestriction = await request(
       proxy.env,
       `/api/v1/businesses/${businessId}/purchases`,
       { auth: owner },
     );
     expect(purchaseListBeforeRestriction.status).toBe(200);
-    expect(purchaseListBeforeRestriction.body.data).toHaveLength(1);
+    expect(purchaseListBeforeRestriction.body.data).toHaveLength(2);
     const registerRow = await proxy.env.DB.prepare(
       'SELECT id FROM registers WHERE business_id=? AND outlet_id=?',
     )

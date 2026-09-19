@@ -1,6 +1,6 @@
 import type { Hono } from 'hono';
 import type { Env } from '../index';
-import { createId, weightedAverageCost } from '@kasuro/domain';
+import { createId } from '@kasuro/domain';
 import { businessContext, requirePermission, type MembershipContext } from '../middleware/tenant';
 
 export function registerPurchaseRoutes(app: Hono<Env>): void {
@@ -224,31 +224,21 @@ export function registerPurchaseRoutes(app: Hono<Env>): void {
           422,
         );
       const line = await c.env.DB.prepare(
-        `SELECT pol.id,pol.variant_id,pol.quantity_ordered,pol.quantity_received,pol.unit_cost_minor,COALESCE(ib.quantity_on_hand,0) AS current_quantity,COALESCE(ib.average_cost_minor,pol.unit_cost_minor) AS current_cost FROM purchase_order_lines pol LEFT JOIN inventory_balances ib ON ib.variant_id=pol.variant_id AND ib.outlet_id=? AND ib.business_id=? WHERE pol.id=? AND pol.purchase_order_id=?`,
+        `SELECT pol.id,pol.variant_id,pol.quantity_ordered,pol.quantity_received,pol.unit_cost_minor FROM purchase_order_lines pol WHERE pol.id=? AND pol.purchase_order_id=?`,
       )
-        .bind(purchase.outlet_id, membership.businessId, input.line_id, purchase.id)
+        .bind(input.line_id, purchase.id)
         .first<{
           id: string;
           variant_id: string;
           quantity_ordered: number;
           quantity_received: number;
           unit_cost_minor: number;
-          current_quantity: number;
-          current_cost: number;
         }>();
       if (!line || line.quantity_received + quantity > line.quantity_ordered)
         return c.json(
           { error: { code: 'RECEIVE_LIMIT', message: 'Received quantity exceeds order' } },
           409,
         );
-      const nextQuantity = line.current_quantity + quantity;
-      const nextCost = Number(
-        weightedAverageCost(
-          { quantity: BigInt(line.current_quantity), averageCost: BigInt(line.current_cost) },
-          BigInt(quantity),
-          BigInt(line.unit_cost_minor),
-        ),
-      );
       statements.push(
         c.env.DB.prepare(
           'UPDATE purchase_order_lines SET quantity_received=quantity_received+? WHERE id=?',
@@ -256,13 +246,20 @@ export function registerPurchaseRoutes(app: Hono<Env>): void {
       );
       statements.push(
         c.env.DB.prepare(
-          `INSERT INTO inventory_balances(business_id,outlet_id,variant_id,quantity_on_hand,average_cost_minor,updated_at) VALUES(?,?,?,?,?,?) ON CONFLICT(business_id,outlet_id,variant_id) DO UPDATE SET quantity_on_hand=excluded.quantity_on_hand,average_cost_minor=excluded.average_cost_minor,updated_at=excluded.updated_at`,
+          `INSERT INTO inventory_balances(business_id,outlet_id,variant_id,quantity_on_hand,average_cost_minor,updated_at) VALUES(?,?,?,?,?,?)
+           ON CONFLICT(business_id,outlet_id,variant_id) DO UPDATE SET
+             quantity_on_hand=inventory_balances.quantity_on_hand+excluded.quantity_on_hand,
+             average_cost_minor=CASE
+               WHEN inventory_balances.quantity_on_hand > 0 THEN CAST((inventory_balances.quantity_on_hand * inventory_balances.average_cost_minor + excluded.quantity_on_hand * excluded.average_cost_minor + (inventory_balances.quantity_on_hand + excluded.quantity_on_hand)/2) / (inventory_balances.quantity_on_hand + excluded.quantity_on_hand) AS INTEGER)
+               ELSE excluded.average_cost_minor
+             END,
+             updated_at=excluded.updated_at`,
         ).bind(
           membership.businessId,
           purchase.outlet_id,
           line.variant_id,
-          nextQuantity,
-          nextCost,
+          quantity,
+          line.unit_cost_minor,
           new Date().toISOString(),
         ),
       );
