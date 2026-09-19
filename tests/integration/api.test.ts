@@ -328,7 +328,7 @@ describe('API integration over isolated local D1', () => {
         ),
       ),
     );
-    expect(concurrentSends.every((response) => response.status === 200)).toBe(true);
+    expect(concurrentSends.map((response) => response.status).sort()).toEqual([200, 409]);
     const transferBalance = await proxy.env.DB.prepare(
       'SELECT quantity_on_hand FROM inventory_balances WHERE business_id=? AND outlet_id=? AND variant_id=?',
     )
@@ -363,6 +363,42 @@ describe('API integration over isolated local D1', () => {
       .bind(businessId, transfer.body.data.id)
       .first<{ count: number }>();
     expect(receiveMovements?.count).toBe(1);
+    const transferRaceRequests = await Promise.all(
+      [1, 2].map(() =>
+        request(proxy.env, `/api/v1/businesses/${businessId}/stock-transfers`, {
+          method: 'POST',
+          auth: owner,
+          body: {
+            source_outlet_id: batu.body.data.id,
+            destination_outlet_id: malang.body.data.id,
+            lines: [{ variant_id: product.body.data.variant_id, quantity: 6 }],
+          },
+        }),
+      ),
+    );
+    expect(transferRaceRequests.every((response) => response.status === 201)).toBe(true);
+    const transferRaceSends = await Promise.all(
+      transferRaceRequests.map((response) =>
+        request(
+          proxy.env,
+          `/api/v1/businesses/${businessId}/stock-transfers/${response.body.data.id}/send`,
+          { method: 'POST', auth: owner },
+        ),
+      ),
+    );
+    expect(transferRaceSends.map((response) => response.status).sort()).toEqual([200, 409]);
+    const transferRaceBalance = await proxy.env.DB.prepare(
+      'SELECT quantity_on_hand FROM inventory_balances WHERE business_id=? AND outlet_id=? AND variant_id=?',
+    )
+      .bind(businessId, batu.body.data.id, product.body.data.variant_id)
+      .first<{ quantity_on_hand: number }>();
+    expect(transferRaceBalance?.quantity_on_hand).toBe(0);
+    const transferRaceMovements = await proxy.env.DB.prepare(
+      "SELECT COUNT(*) AS count FROM stock_movements WHERE business_id=? AND outlet_id=? AND variant_id=? AND movement_type='transfer_out'",
+    )
+      .bind(businessId, batu.body.data.id, product.body.data.variant_id)
+      .first<{ count: number }>();
+    expect(transferRaceMovements?.count).toBe(2);
     const stockCount = await request(proxy.env, `/api/v1/businesses/${businessId}/stock-counts`, {
       method: 'POST',
       auth: owner,

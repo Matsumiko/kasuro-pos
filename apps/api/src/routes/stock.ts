@@ -279,7 +279,7 @@ export function registerStockRoutes(app: Hono<Env>): void {
     if (!c.env.DB) return unavailable(c);
     const transferId = c.req.param('transferId');
     const transfer = await c.env.DB.prepare(
-      "SELECT id,source_outlet_id,destination_outlet_id,status FROM stock_transfers WHERE id=? AND business_id=? AND status IN ('requested','approved')",
+      'SELECT id,source_outlet_id,destination_outlet_id,status FROM stock_transfers WHERE id=? AND business_id=?',
     )
       .bind(transferId, membership.businessId)
       .first<{
@@ -290,6 +290,8 @@ export function registerStockRoutes(app: Hono<Env>): void {
       }>();
     if (!transfer || !(await canAccessOutlet(c.env.DB, membership, transfer.source_outlet_id)))
       return notFound(c);
+    if (!['requested', 'approved'].includes(transfer.status))
+      return c.json({ data: { id: transferId, status: transfer.status, idempotent: true } });
     const lines = await c.env.DB.prepare(
       'SELECT variant_id,quantity_requested,quantity_sent FROM stock_transfer_lines WHERE transfer_id=?',
     )
@@ -369,6 +371,9 @@ export function registerStockRoutes(app: Hono<Env>): void {
           membership.memberId,
           now,
         ),
+        c.env.DB.prepare(
+          'UPDATE inventory_balances SET average_cost_minor=-1 WHERE business_id=? AND outlet_id=? AND variant_id=? AND changes()=0',
+        ).bind(membership.businessId, transfer.source_outlet_id, line.variant_id),
       );
     }
     statements.push(
@@ -376,7 +381,21 @@ export function registerStockRoutes(app: Hono<Env>): void {
         "UPDATE stock_transfers SET status='sent',updated_at=? WHERE id=? AND business_id=? AND status IN ('requested','approved') AND NOT EXISTS (SELECT 1 FROM stock_transfer_lines WHERE transfer_id=? AND quantity_sent<quantity_requested)",
       ).bind(now, transferId, membership.businessId, transferId),
     );
-    await c.env.DB.batch(statements);
+    try {
+      await c.env.DB.batch(statements);
+    } catch (error) {
+      if (String(error).includes('average_cost_minor'))
+        return c.json(
+          {
+            error: {
+              code: 'INSUFFICIENT_STOCK',
+              message: 'Transfer source has insufficient stock',
+            },
+          },
+          409,
+        );
+      throw error;
+    }
     const updated = await c.env.DB.prepare(
       'SELECT status FROM stock_transfers WHERE id=? AND business_id=?',
     )
