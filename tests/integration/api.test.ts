@@ -309,6 +309,53 @@ describe('API integration over isolated local D1', () => {
       .bind(businessId, batu.body.data.id, product.body.data.variant_id)
       .first<{ quantity_on_hand: number; average_cost_minor: number }>();
     expect(concurrentBalance).toEqual({ quantity_on_hand: 8, average_cost_minor: 12500 });
+    const overclaimPurchase = await request(
+      proxy.env,
+      `/api/v1/businesses/${businessId}/purchases`,
+      {
+        method: 'POST',
+        auth: owner,
+        body: {
+          supplier_id: supplier.body.data.id,
+          outlet_id: batu.body.data.id,
+          lines: [
+            { variant_id: product.body.data.variant_id, quantity: 2, unit_cost_minor: 14000 },
+          ],
+        },
+      },
+    );
+    expect(overclaimPurchase.status).toBe(201);
+    const overclaimLine = await proxy.env.DB.prepare(
+      'SELECT id FROM purchase_order_lines WHERE purchase_order_id=?',
+    )
+      .bind(overclaimPurchase.body.data.id)
+      .first<{ id: string }>();
+    const overclaimReceipts = await Promise.all(
+      ['overclaim-a', 'overclaim-b'].map((receipt_id) =>
+        request(
+          proxy.env,
+          `/api/v1/businesses/${businessId}/purchases/${overclaimPurchase.body.data.id}/receive`,
+          {
+            method: 'POST',
+            auth: owner,
+            body: { receipt_id, lines: [{ line_id: overclaimLine!.id, quantity: 2 }] },
+          },
+        ),
+      ),
+    );
+    expect(overclaimReceipts.map((receipt) => receipt.status).sort()).toEqual([200, 409]);
+    const overclaimBalance = await proxy.env.DB.prepare(
+      'SELECT quantity_on_hand FROM inventory_balances WHERE business_id=? AND outlet_id=? AND variant_id=?',
+    )
+      .bind(businessId, batu.body.data.id, product.body.data.variant_id)
+      .first<{ quantity_on_hand: number }>();
+    expect(overclaimBalance?.quantity_on_hand).toBe(10);
+    const overclaimMovements = await proxy.env.DB.prepare(
+      "SELECT COUNT(*) AS count FROM stock_movements WHERE business_id=? AND source_type='purchase_order' AND source_id LIKE ?",
+    )
+      .bind(businessId, `${overclaimPurchase.body.data.id}:%`)
+      .first<{ count: number }>();
+    expect(overclaimMovements?.count).toBe(1);
     const transfer = await request(proxy.env, `/api/v1/businesses/${businessId}/stock-transfers`, {
       method: 'POST',
       auth: owner,
@@ -334,7 +381,7 @@ describe('API integration over isolated local D1', () => {
     )
       .bind(businessId, batu.body.data.id, product.body.data.variant_id)
       .first<{ quantity_on_hand: number }>();
-    expect(transferBalance?.quantity_on_hand).toBe(6);
+    expect(transferBalance?.quantity_on_hand).toBe(8);
     const transferMovements = await proxy.env.DB.prepare(
       "SELECT COUNT(*) AS count FROM stock_movements WHERE business_id=? AND source_type='stock_transfer' AND source_id=? AND movement_type='transfer_out'",
     )
@@ -371,7 +418,7 @@ describe('API integration over isolated local D1', () => {
           body: {
             source_outlet_id: batu.body.data.id,
             destination_outlet_id: malang.body.data.id,
-            lines: [{ variant_id: product.body.data.variant_id, quantity: 6 }],
+            lines: [{ variant_id: product.body.data.variant_id, quantity: 8 }],
           },
         }),
       ),
@@ -452,7 +499,7 @@ describe('API integration over isolated local D1', () => {
     )
       .bind(businessId, batu.body.data.id, product.body.data.variant_id)
       .first<{ quantity_on_hand: number; average_cost_minor: number }>();
-    expect(adjustedBalance).toEqual({ quantity_on_hand: 9, average_cost_minor: 12612 });
+    expect(adjustedBalance).toEqual({ quantity_on_hand: 9, average_cost_minor: 12844 });
     const rejectedAdjustment = await request(
       proxy.env,
       `/api/v1/businesses/${businessId}/inventory/adjustments`,
@@ -478,7 +525,7 @@ describe('API integration over isolated local D1', () => {
       { auth: owner },
     );
     expect(purchaseListBeforeRestriction.status).toBe(200);
-    expect(purchaseListBeforeRestriction.body.data).toHaveLength(2);
+    expect(purchaseListBeforeRestriction.body.data).toHaveLength(3);
     const registerRow = await proxy.env.DB.prepare(
       'SELECT id FROM registers WHERE business_id=? AND outlet_id=?',
     )

@@ -241,8 +241,11 @@ export function registerPurchaseRoutes(app: Hono<Env>): void {
         );
       statements.push(
         c.env.DB.prepare(
-          'UPDATE purchase_order_lines SET quantity_received=quantity_received+? WHERE id=?',
-        ).bind(quantity, line.id),
+          'UPDATE purchase_order_lines SET quantity_received=quantity_received+? WHERE id=? AND quantity_received+?<=quantity_ordered',
+        ).bind(quantity, line.id, quantity),
+        c.env.DB.prepare(
+          'UPDATE inventory_balances SET average_cost_minor=-1 WHERE business_id=? AND outlet_id=? AND variant_id=? AND changes()=0',
+        ).bind(membership.businessId, purchase.outlet_id, line.variant_id),
       );
       statements.push(
         c.env.DB.prepare(
@@ -281,7 +284,19 @@ export function registerPurchaseRoutes(app: Hono<Env>): void {
         ),
       );
     }
-    await c.env.DB.batch(statements);
+    try {
+      await c.env.DB.batch(statements);
+    } catch (error) {
+      if (
+        String(error).includes('average_cost_minor') ||
+        String(error).includes('quantity_received')
+      )
+        return c.json(
+          { error: { code: 'RECEIVE_LIMIT', message: 'Received quantity exceeds order' } },
+          409,
+        );
+      throw error;
+    }
     const remaining = await c.env.DB.prepare(
       'SELECT COUNT(*) AS pending FROM purchase_order_lines WHERE purchase_order_id=? AND quantity_received<quantity_ordered',
     )
