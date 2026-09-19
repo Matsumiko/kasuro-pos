@@ -309,6 +309,38 @@ describe('API integration over isolated local D1', () => {
       .bind(businessId, batu.body.data.id, product.body.data.variant_id)
       .first<{ quantity_on_hand: number; average_cost_minor: number }>();
     expect(concurrentBalance).toEqual({ quantity_on_hand: 8, average_cost_minor: 12500 });
+    const transfer = await request(proxy.env, `/api/v1/businesses/${businessId}/stock-transfers`, {
+      method: 'POST',
+      auth: owner,
+      body: {
+        source_outlet_id: batu.body.data.id,
+        destination_outlet_id: malang.body.data.id,
+        lines: [{ variant_id: product.body.data.variant_id, quantity: 2 }],
+      },
+    });
+    expect(transfer.status).toBe(201);
+    const concurrentSends = await Promise.all(
+      [1, 2].map(() =>
+        request(
+          proxy.env,
+          `/api/v1/businesses/${businessId}/stock-transfers/${transfer.body.data.id}/send`,
+          { method: 'POST', auth: owner },
+        ),
+      ),
+    );
+    expect(concurrentSends.every((response) => response.status === 200)).toBe(true);
+    const transferBalance = await proxy.env.DB.prepare(
+      'SELECT quantity_on_hand FROM inventory_balances WHERE business_id=? AND outlet_id=? AND variant_id=?',
+    )
+      .bind(businessId, batu.body.data.id, product.body.data.variant_id)
+      .first<{ quantity_on_hand: number }>();
+    expect(transferBalance?.quantity_on_hand).toBe(6);
+    const transferMovements = await proxy.env.DB.prepare(
+      "SELECT COUNT(*) AS count FROM stock_movements WHERE business_id=? AND source_type='stock_transfer' AND source_id=? AND movement_type='transfer_out'",
+    )
+      .bind(businessId, transfer.body.data.id)
+      .first<{ count: number }>();
+    expect(transferMovements?.count).toBe(1);
 
     const purchaseListBeforeRestriction = await request(
       proxy.env,
