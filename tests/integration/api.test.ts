@@ -479,6 +479,37 @@ describe('API integration over isolated local D1', () => {
     await proxy.env.DB.prepare('INSERT INTO member_roles(member_id,role_id) VALUES(?,?)')
       .bind(memberId, 'role-cashier')
       .run();
+    const cashierOnly = await register(proxy.env, 'cashier-only@example.test');
+    const cashierMemberId = 'member-cashier-only';
+    await proxy.env.DB.batch([
+      proxy.env.DB.prepare(
+        "INSERT INTO business_members(id,business_id,user_id,status,all_outlets,joined_at,created_at,updated_at) VALUES(?,?,?,'active',0,datetime('now'),datetime('now'),datetime('now'))",
+      ).bind(cashierMemberId, businessId, cashierOnly.userId),
+      proxy.env.DB.prepare('INSERT INTO member_roles(member_id,role_id) VALUES(?,?)').bind(
+        cashierMemberId,
+        'role-cashier',
+      ),
+      proxy.env.DB.prepare('INSERT INTO member_outlets(member_id,outlet_id) VALUES(?,?)').bind(
+        cashierMemberId,
+        malang.body.data.id,
+      ),
+    ]);
+    const cashierProducts = await request(
+      proxy.env,
+      `/api/v1/businesses/${businessId}/products?q=Coffee`,
+      { auth: cashierOnly },
+    );
+    expect(cashierProducts.status).toBe(200);
+    expect(cashierProducts.body.data[0]).not.toHaveProperty('cost_minor');
+    expect(cashierProducts.body.data[0]).not.toHaveProperty('variant_cost_minor');
+    const cashierProductDetail = await request(
+      proxy.env,
+      `/api/v1/businesses/${businessId}/products/${product.body.data.id}`,
+      { auth: cashierOnly },
+    );
+    expect(cashierProductDetail.status).toBe(200);
+    expect(cashierProductDetail.body.data).not.toHaveProperty('cost_minor');
+    expect(cashierProductDetail.body.data.variants[0]).not.toHaveProperty('cost_minor');
     const restrictedSync = await request(proxy.env, `/api/v1/businesses/${businessId}/sync/sales`, {
       method: 'POST',
       auth: restricted,
