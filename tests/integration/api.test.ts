@@ -363,6 +363,47 @@ describe('API integration over isolated local D1', () => {
       .bind(businessId, transfer.body.data.id)
       .first<{ count: number }>();
     expect(receiveMovements?.count).toBe(1);
+    const concurrentAdjustments = await Promise.all(
+      ['adjustment-a', 'adjustment-b'].map((idempotency_key) =>
+        request(proxy.env, `/api/v1/businesses/${businessId}/inventory/adjustments`, {
+          method: 'POST',
+          auth: owner,
+          body: {
+            outlet_id: batu.body.data.id,
+            variant_id: product.body.data.variant_id,
+            quantity_delta: 1,
+            unit_cost_minor: 13000,
+            reason: 'Concurrent recount',
+            idempotency_key,
+          },
+        }),
+      ),
+    );
+    expect(concurrentAdjustments.every((response) => response.status === 201)).toBe(true);
+    const adjustedBalance = await proxy.env.DB.prepare(
+      'SELECT quantity_on_hand,average_cost_minor FROM inventory_balances WHERE business_id=? AND outlet_id=? AND variant_id=?',
+    )
+      .bind(businessId, batu.body.data.id, product.body.data.variant_id)
+      .first<{ quantity_on_hand: number; average_cost_minor: number }>();
+    expect(adjustedBalance).toEqual({ quantity_on_hand: 8, average_cost_minor: 12625 });
+    const rejectedAdjustment = await request(
+      proxy.env,
+      `/api/v1/businesses/${businessId}/inventory/adjustments`,
+      {
+        method: 'POST',
+        auth: owner,
+        body: {
+          outlet_id: batu.body.data.id,
+          variant_id: product.body.data.variant_id,
+          quantity_delta: -9,
+          unit_cost_minor: 13000,
+          reason: 'Negative stock guard',
+          idempotency_key: 'adjustment-negative',
+        },
+      },
+    );
+    expect(rejectedAdjustment.status).toBe(409);
+    expect(rejectedAdjustment.body.error.code).toBe('INSUFFICIENT_STOCK');
 
     const purchaseListBeforeRestriction = await request(
       proxy.env,

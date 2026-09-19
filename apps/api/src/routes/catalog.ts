@@ -636,7 +636,7 @@ export function registerCatalogRoutes(app: Hono<Env>): void {
     try {
       await c.env.DB.batch([
         c.env.DB.prepare(
-          'UPDATE inventory_balances SET quantity_on_hand=quantity_on_hand+?,average_cost_minor=CASE WHEN quantity_on_hand > 0 AND quantity_on_hand+? > 0 THEN CAST((quantity_on_hand * average_cost_minor + ? * ? + (quantity_on_hand + ?)/2) / (quantity_on_hand + ?) AS INTEGER) WHEN quantity_on_hand+? > 0 THEN ? ELSE 0 END,updated_at=? WHERE business_id=? AND outlet_id=? AND variant_id=?',
+          'UPDATE inventory_balances SET quantity_on_hand=quantity_on_hand+?,average_cost_minor=CASE WHEN quantity_on_hand > 0 AND quantity_on_hand+? > 0 THEN CAST((quantity_on_hand * average_cost_minor + ? * ? + (quantity_on_hand + ?)/2) / (quantity_on_hand + ?) AS INTEGER) WHEN quantity_on_hand+? > 0 THEN ? ELSE 0 END,updated_at=? WHERE business_id=? AND outlet_id=? AND variant_id=? AND quantity_on_hand+? >= 0',
         ).bind(
           delta,
           delta,
@@ -650,9 +650,10 @@ export function registerCatalogRoutes(app: Hono<Env>): void {
           membership.businessId,
           body.outlet_id,
           body.variant_id,
+          delta,
         ),
         c.env.DB.prepare(
-          `INSERT INTO stock_movements(id,business_id,outlet_id,variant_id,movement_type,quantity_delta,unit_cost_minor,source_type,source_id,actor_member_id,client_transaction_id,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
+          `INSERT INTO stock_movements(id,business_id,outlet_id,variant_id,movement_type,quantity_delta,unit_cost_minor,source_type,source_id,actor_member_id,client_transaction_id,created_at) SELECT ?,?,?,?,?,?,?,?,?,?,?,? WHERE changes()>0`,
         ).bind(
           createId(),
           membership.businessId,
@@ -685,15 +686,18 @@ export function registerCatalogRoutes(app: Hono<Env>): void {
           sourceId,
           true,
         );
-      if (error instanceof Error && error.message.includes('INSUFFICIENT_STOCK'))
-        return c.json(
-          {
-            error: { code: 'INSUFFICIENT_STOCK', message: 'Adjustment would make stock negative' },
-          },
-          409,
-        );
       throw error;
     }
+    const movement = await c.env.DB.prepare(
+      'SELECT 1 FROM stock_movements WHERE business_id=? AND source_type=? AND source_id=? AND variant_id=? AND movement_type=?',
+    )
+      .bind(membership.businessId, 'adjustment', sourceId, body.variant_id, 'adjustment')
+      .first();
+    if (!movement)
+      return c.json(
+        { error: { code: 'INSUFFICIENT_STOCK', message: 'Adjustment would make stock negative' } },
+        409,
+      );
     return adjustmentResult(
       c.env.DB,
       membership.businessId,
