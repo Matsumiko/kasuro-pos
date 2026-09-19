@@ -640,6 +640,29 @@ describe('API integration over isolated local D1', () => {
       body: { name: 'Platform Scope Demo', slug: 'platform-scope-demo', timezone: 'Asia/Jakarta' },
     });
     const businessId = business.body.data.id as string;
+    const invitationsBefore = await proxy.env.DB.prepare(
+      'SELECT COUNT(*) AS count FROM invitations WHERE business_id=?',
+    )
+      .bind(businessId)
+      .first<{ count: number }>();
+    const productionInvitation = await request(
+      { ...proxy.env, ENVIRONMENT: 'production' },
+      `/api/v1/businesses/${businessId}/staff/invitations`,
+      {
+        method: 'POST',
+        auth: owner,
+        body: { email: 'production-invite@example.test', role_key: 'cashier' },
+      },
+    );
+    expect(productionInvitation.status).toBe(503);
+    expect(productionInvitation.body.error?.code).toBe('INVITATION_DELIVERY_UNAVAILABLE');
+    const invitationsAfter = await proxy.env.DB.prepare(
+      'SELECT COUNT(*) AS count FROM invitations WHERE business_id=?',
+    )
+      .bind(businessId)
+      .first<{ count: number }>();
+    expect(invitationsAfter?.count).toBe(invitationsBefore?.count);
+
     const admin = await register(proxy.env, 'platform-admin@example.test');
     const now = new Date().toISOString();
     await proxy.env.DB.prepare(

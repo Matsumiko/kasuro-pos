@@ -4086,15 +4086,21 @@ function Staff() {
     setError('');
     setSuccess('');
     try {
-      const result = await api<{ email: string; role_key: string; invitation_token: string }>(
-        `/api/v1/businesses/${businessId}/staff/invitations`,
-        {
-          method: 'POST',
-          headers: { 'X-CSRF-Token': getCsrf() },
-          body: JSON.stringify({ email, role_key: inviteRole }),
-        },
+      const result = await api<{
+        email: string;
+        role_key: string;
+        expires_at: string;
+        invitation_token?: string;
+      }>(`/api/v1/businesses/${businessId}/staff/invitations`, {
+        method: 'POST',
+        headers: { 'X-CSRF-Token': getCsrf() },
+        body: JSON.stringify({ email, role_key: inviteRole }),
+      });
+      setSuccess(
+        result.invitation_token
+          ? `Undangan untuk ${result.email} dibuat. Token: ${result.invitation_token}`
+          : `Undangan untuk ${result.email} dibuat dan akan dikirim melalui email.`,
       );
-      setSuccess(`Undangan untuk ${result.email} dibuat. Token: ${result.invitation_token}`);
       setEmail('');
       await load(businessId);
     } catch (err) {

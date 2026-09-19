@@ -26,6 +26,16 @@ export function registerStaffRoutes(app: Hono<Env>): void {
   app.post('/api/v1/businesses/:businessId/staff/invitations', async (c) => {
     const membership = requirePermission(c, 'staff.invite');
     if (!c.env.DB) return unavailable(c);
+    if (c.env.ENVIRONMENT === 'production')
+      return c.json(
+        {
+          error: {
+            code: 'INVITATION_DELIVERY_UNAVAILABLE',
+            message: 'Invitation delivery is not configured',
+          },
+        },
+        503,
+      );
     const body = await c.req.json<{ email?: string; role_key?: string }>();
     const email = body.email?.trim().toLowerCase();
     const roleKey = body.role_key?.trim() || 'cashier';
@@ -73,18 +83,25 @@ export function registerStaffRoutes(app: Hono<Env>): void {
     }>();
     const roleKey = body.role_key?.trim();
     if (!roleKey || !['admin', 'manager', 'cashier', 'inventory_staff'].includes(roleKey))
-      return c.json({ error: { code: 'VALIDATION_ERROR', message: 'Role is not available for assignment' } }, 422);
+      return c.json(
+        { error: { code: 'VALIDATION_ERROR', message: 'Role is not available for assignment' } },
+        422,
+      );
     if (memberId === membership.memberId)
-      return c.json({ error: { code: 'CONFLICT', message: 'You cannot change your own role' } }, 409);
+      return c.json(
+        { error: { code: 'CONFLICT', message: 'You cannot change your own role' } },
+        409,
+      );
     const member = await c.env.DB.prepare(
-      'SELECT id FROM business_members WHERE id=? AND business_id=? AND status IN (\'active\',\'invited\')',
+      "SELECT id FROM business_members WHERE id=? AND business_id=? AND status IN ('active','invited')",
     )
       .bind(memberId, membership.businessId)
       .first();
     const role = await c.env.DB.prepare('SELECT id FROM roles WHERE business_id IS NULL AND key=?')
       .bind(roleKey)
       .first<{ id: string }>();
-    if (!member || !role) return c.json({ error: { code: 'NOT_FOUND', message: 'Not found' } }, 404);
+    if (!member || !role)
+      return c.json({ error: { code: 'NOT_FOUND', message: 'Not found' } }, 404);
     const outletIds = [...new Set(body.outlet_ids ?? [])];
     if (body.all_outlets !== true) {
       const outlets = await c.env.DB.prepare(
@@ -93,17 +110,25 @@ export function registerStaffRoutes(app: Hono<Env>): void {
         .bind(membership.businessId, ...outletIds)
         .all<{ id: string }>();
       if (outlets.results.length !== outletIds.length)
-        return c.json({ error: { code: 'NOT_FOUND', message: 'One or more outlets were not found' } }, 404);
+        return c.json(
+          { error: { code: 'NOT_FOUND', message: 'One or more outlets were not found' } },
+          404,
+        );
     }
     const statements = [
-      c.env.DB.prepare('UPDATE business_members SET all_outlets=?,updated_at=? WHERE id=? AND business_id=?').bind(
+      c.env.DB.prepare(
+        'UPDATE business_members SET all_outlets=?,updated_at=? WHERE id=? AND business_id=?',
+      ).bind(
         body.all_outlets === true ? 1 : 0,
         new Date().toISOString(),
         memberId,
         membership.businessId,
       ),
       c.env.DB.prepare('DELETE FROM member_roles WHERE member_id=?').bind(memberId),
-      c.env.DB.prepare('INSERT INTO member_roles(member_id,role_id) VALUES(?,?)').bind(memberId, role.id),
+      c.env.DB.prepare('INSERT INTO member_roles(member_id,role_id) VALUES(?,?)').bind(
+        memberId,
+        role.id,
+      ),
       c.env.DB.prepare('DELETE FROM member_outlets WHERE member_id=?').bind(memberId),
     ];
     if (body.all_outlets !== true)
@@ -115,7 +140,14 @@ export function registerStaffRoutes(app: Hono<Env>): void {
           ),
         );
     await c.env.DB.batch(statements);
-    return c.json({ data: { id: memberId, role_key: roleKey, all_outlets: body.all_outlets === true, outlet_ids: outletIds } });
+    return c.json({
+      data: {
+        id: memberId,
+        role_key: roleKey,
+        all_outlets: body.all_outlets === true,
+        outlet_ids: outletIds,
+      },
+    });
   });
 }
 function unavailable(c: { json: (body: unknown, status?: 503) => Response }): Response {
